@@ -91,6 +91,43 @@ class DomainMetricsOptions(BaseModel):
     )
 
 
+class CoTOptions(BaseModel):
+    """Chain-of-Thought 단계별 추론 강제
+
+    LLM이 점수를 먼저 결정하고 근거를 역으로 생성하는 편향을 방지.
+    '근거 먼저, 점수 나중' 구조로 프롬프트를 재구성한다.
+
+    적용 메트릭: answer_relevance / context_precision / context_recall
+    (faithfulness는 이미 claim NLI로 CoT 구조)
+    """
+    enabled: bool = True              # 기본 ON — 품질 향상 대비 비용 증가 없음
+    metrics: list[str] = Field(
+        default_factory=lambda: ["answer_relevance", "context_precision", "context_recall"]
+    )
+
+
+class ReverseVerificationOptions(BaseModel):
+    """역방향 검증 (Reverse Verification)
+
+    순방향(forward)과 역방향(backward) 두 방향으로 독립 평가 후 비교.
+    두 방향이 크게 다르면(불일치) is_low_confidence=True 처리.
+    최종 점수 = forward × weight_forward + reverse × weight_reverse
+
+    faithfulness:  순방향 = 답변→컨텍스트 지지 여부
+                   역방향 = 컨텍스트→답변 생성 가능 여부
+
+    answer_relevance: 순방향 = 답변이 질문에 응답하는가
+                      역방향 = 답변만 보고 원래 질문을 추론할 수 있는가
+    """
+    enabled: bool = False             # 기본 OFF — LLM 호출 2× 비용
+    metrics: list[str] = Field(
+        default_factory=lambda: ["faithfulness", "answer_relevance"]
+    )
+    weight_forward: float = 0.6       # 순방향 가중치
+    weight_reverse: float = 0.4       # 역방향 가중치
+    inconsistency_threshold: float = 0.25   # |forward - reverse| > 이 값 → is_low_confidence
+
+
 class EvaluationOptions(BaseModel):
     """전체 평가 기법 토글 묶음"""
     calibration: CalibrationOptions = Field(default_factory=CalibrationOptions)
@@ -102,6 +139,8 @@ class EvaluationOptions(BaseModel):
     routing: RoutingOptions = Field(default_factory=RoutingOptions)
     ppi: PPIOptions = Field(default_factory=PPIOptions)
     domain: DomainMetricsOptions = Field(default_factory=DomainMetricsOptions)
+    cot: CoTOptions = Field(default_factory=CoTOptions)
+    reverse: ReverseVerificationOptions = Field(default_factory=ReverseVerificationOptions)
 
     # ----------------------------------------------------------
     # 로더
@@ -150,4 +189,6 @@ class EvaluationOptions(BaseModel):
             "routing": self.routing.enabled,
             "ppi": self.ppi.enabled,
             "domain": self.domain.enabled,
+            "cot": self.cot.enabled,
+            "reverse": self.reverse.enabled,
         }

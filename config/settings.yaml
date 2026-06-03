@@ -121,6 +121,20 @@ evaluation:
     multiturn_consistency: true
     safety_compliance: true
     pii_patterns: ["주민등록번호", "카드번호", "전화번호", "계좌번호"]
+  cot:                              # Chain-of-Thought 단계별 추론 강제 (비용 동일)
+    enabled: true                   # 기본 ON — 추가 비용 없이 정확도 향상
+    metrics:
+      - "answer_relevance"
+      - "context_precision"
+      - "context_recall"
+  reverse:                          # 역방향 검증 (LLM 호출 2×, 고신뢰 프로필용)
+    enabled: false                  # 기본 OFF — --enable reverse 로 활성화
+    metrics:
+      - "faithfulness"
+      - "answer_relevance"
+    weight_forward: 0.6             # 순방향 가중치
+    weight_reverse: 0.4             # 역방향 가중치
+    inconsistency_threshold: 0.25   # |forward-reverse| > 이 값 → is_low_confidence
 
 # --- CP5: 집계 ---
 cp5:

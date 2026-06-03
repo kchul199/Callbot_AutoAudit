@@ -111,6 +111,8 @@ docker compose up --build   # backend :8000, frontend :8080
 
 | 옵션 | 기법 | 효과 | 기본값 |
 |------|------|------|--------|
+| `cot` | **Chain-of-Thought 강제** | '근거 먼저, 점수 나중' 단계 추론 → 점수 선결정 편향 차단 (추가 비용 없음) | **on** |
+| `reverse` | **역방향 검증** | 순방향+역방향 양방향 평가 → 불일치 시 저신뢰 플래그 → 환각 누락 탐지↑ | off |
 | `calibration` | 편향 보정 + G-Eval | 앵커/길이정규화로 leniency·verbosity bias 완화 | off |
 | `ensemble` | 다중 Judge 앙상블 | OpenAI+Anthropic 교차 평가 → 불일치 시 메타 판정 에스컬레이션 | off |
 | `meta_eval` | 골든셋 메타평가 | 인간 라벨 대비 Spearman ρ / Cohen κ / MAE | off |
@@ -122,14 +124,32 @@ docker compose up --build   # backend :8000, frontend :8080
 | `domain` | 도메인 메트릭 | 멀티턴 일관성 + PII/컴플라이언스 안전성 | off |
 
 ```bash
-# 신뢰성 극대화 프로필
-python run_pipeline.py --enable calibration,ensemble,meta_eval
+# 정확도 극대화 프로필 (CoT 기본 ON + 역방향 검증)
+python run_pipeline.py --enable reverse
 
-# 대규모 저비용 프로필
-python run_pipeline.py --enable ppi,routing
+# 신뢰성 극대화 프로필
+python run_pipeline.py --enable reverse,calibration,ensemble,meta_eval
+
+# 대규모 저비용 프로필 (CoT 끄고 비용 절감)
+python run_pipeline.py --enable ppi,routing --disable cot
 
 # 콜봇 안전성 감사 프로필
 python run_pipeline.py --enable domain,nugget
+```
+
+### CoT + 역방향 검증 동작 원리
+
+```
+[CoT 강제] — answer_relevance / context_precision / context_recall
+  기존: "점수를 매겨라" → LLM이 점수 먼저 정하고 근거 역생성 (편향)
+  개선: Step1 의도분석 → Step2 항목나열 → Step3 누락확인 → Step4 점수
+        → cot_steps 필드에 단계별 추론 기록 (Evidence View 연동)
+
+[역방향 검증] — faithfulness / answer_relevance
+  순방향: 답변 → 컨텍스트 지지 여부 (forward_score)
+  역방향: 컨텍스트 → 답변 도출 가능성 (reverse_score)
+  최종점수 = forward × 0.6 + reverse × 0.4
+  |forward - reverse| > 0.25 → is_low_confidence=True → 사람 검수 우선
 ```
 
 ---

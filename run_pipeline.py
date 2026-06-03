@@ -435,7 +435,8 @@ if __name__ == "__main__":
         type=lambda s: s.split(","),
         default=[],
         help="평가 기법 켜기 (쉼표구분): calibration,ensemble,meta_eval,nugget,"
-             "diagnosis,statistics,routing,ppi,domain (하위필드: calibration.g_eval_logprobs)",
+             "diagnosis,statistics,routing,ppi,domain,cot,reverse "
+             "(하위필드: calibration.g_eval_logprobs)",
     )
     parser.add_argument(
         "--disable",

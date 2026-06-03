@@ -132,11 +132,17 @@ class MetricScore(BaseModel):
     is_low_confidence: bool = False  # SLA 판정 시 별도 처리 플래그
     # --- 고급 기법 메타데이터 (옵션 활성 시 채워짐) ---
     claims: list[ClaimVerdict] = Field(default_factory=list)   # faithfulness claim 분해 결과
-    method: str = "single"         # single | multi_sample | g_eval | ensemble | nugget | claim_nli | ppi_classifier | domain
+    method: str = "single"         # single | multi_sample | g_eval | ensemble | nugget | claim_nli | ppi_classifier | domain | cot | cot_reverse
     ensemble_scores: dict[str, float] = Field(default_factory=dict)  # provider별 점수
     escalated: bool = False         # 불일치/저신뢰로 재평가됨
     ci_low: float | None = None     # 점수 신뢰구간 하한
     ci_high: float | None = None
+    # --- CoT (Chain-of-Thought) 메타데이터 ---
+    cot_steps: list[str] = Field(default_factory=list)  # CoT 단계별 추론 결과
+    # --- 역방향 검증 (Reverse Verification) 메타데이터 ---
+    forward_score: float | None = None   # 순방향 점수 (답변→컨텍스트)
+    reverse_score: float | None = None   # 역방향 점수 (컨텍스트→답변 or 답변→질문)
+    consistency_score: float | None = None  # |forward - reverse| (낮을수록 일관성 높음)
 
 
 class Nugget(BaseModel):
