@@ -1,24 +1,28 @@
 # 🤖 CallBot AutoAudit
 
-Ground Truth 없이도 신뢰할 수 있는 품질 지표를 산출하는 **RAG 품질 자동 감사 파이프라인**.
-콜봇 대화 로그를 입력받아 CP1~CP6 단계를 거쳐 환각(Hallucination)을 탐지하고 근거 기반(Evidence-based) 평가 리포트를 생성합니다.
+> Ground Truth 없이도 신뢰할 수 있는 품질 지표를 산출하는 **RAG 품질 자동 감사 파이프라인**.  
+> 콜봇 대화 로그를 입력받아 CP1~CP6 단계를 거쳐 환각(Hallucination)을 탐지하고 근거 기반 평가 리포트를 생성합니다.
+
+---
 
 ## 아키텍처 (CP1 ~ CP6)
 
 | CP | 단계 | 핵심 |
 |----|------|------|
 | CP1 | 전처리 | txt/json/csv 로그 → `CallLog` 표준 스키마 |
-| CP2 | 지식베이스 | Parent-Child 청킹 + ChromaDB 인덱싱 |
+| CP2 | 지식베이스 | Parent-Child 청킹 + ChromaDB 인덱싱 (cosine HNSW) |
 | CP3 | 검색 | HyDE + Multi-Query + **BM25/Dense Hybrid(RRF)** + Cross-Encoder Rerank |
 | CP3.5 | QA 추출 | 대화 → (질문, 봇답변) 쌍 + 컨텍스트 부착 |
 | CP4 | 평가 | LLM-as-a-Judge **다중 샘플링 + 신뢰도** (Faithfulness 등 4지표) |
-| CP5 | 집계 | SLA 판정 + 통계 (mean/median/p10/p90) |
+| CP5 | 집계 | SLA 판정 + 통계 (mean/median/p10/p90) + 부트스트랩 CI |
 | CP6 | 리포트 | HTML/JSON + **회귀 감지** + Slack 알림 |
 
-## 🖥️ 관리 포털 (Admin Console)
+---
 
-멀티테넌트 SaaS 콜봇의 답변 품질을 **자동 평가 → 휴먼 재평가 → 확정**하는 웹 콘솔.
-(Vite + React, `frontend/` · FastAPI 백엔드 · 기획서 `docs/ADMIN_PORTAL_PRD.md`)
+## 🖥️ Admin Console
+
+멀티테넌트 SaaS 콜봇의 답변 품질을 **자동 평가 → 휴먼 재평가 → 확정**하는 웹 콘솔.  
+(Vite + React + TypeScript `frontend/` · FastAPI 백엔드)
 
 | 화면 | 기능 |
 |------|------|
@@ -27,39 +31,89 @@ Ground Truth 없이도 신뢰할 수 있는 품질 지표를 산출하는 **RAG 
 | **Run Evaluation** | 6스텝 마법사 — Judge모델(Claude/GPT/Gemini, 앙상블)·레벨·메트릭·방법론 |
 | **Review** | 3-pane 휴먼 재평가 워크스페이스 (자동→휴먼 점수 수정/승인) |
 | **Evaluations** | 필터 탐색 + Evidence 드로어 |
-| **Trends** | 일자별/배치별 추이 그래프 + 휴먼·자동 일치도(표본 drill-in) |
+| **Trends** | 일자별/배치별 추이 그래프 + 휴먼·자동 일치도 |
 | **Knowledge Base** | KB 현황 + 검색 커버리지 갭 |
 | **Settings** | SLA 임계값·평가 프로필·Judge 자격증명·알림 |
 
-핵심: 멀티테넌시(tenant 격리) · 평가 3레벨(검색/턴/세션) · 다중 LLM Judge · Final Score(휴먼 우선)
+---
+
+## 🧪 로컬 개발 (API 키·무거운 의존성 불필요)
+
+`AUTOAUDIT_MOCK=1`이면 **MockProvider + In-Memory 벡터스토어**로 동작합니다.  
+openai / chromadb / sentence-transformers / torch / rank-bm25 / numpy 없이, 비용 $0으로  
+CP1~CP6 전체 파이프라인 · API · 대시보드를 로컬에서 실행할 수 있습니다.
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt          # 경량 의존성만
+
 # 백엔드 (mock)
-AUTOAUDIT_MOCK=1 uvicorn AutoAudit.app.api.server:app --port 8010
-python scripts/seed_sessions.py --reset   # 데모 데이터 시드
-# 프론트
-cd frontend && npm run dev                 # http://localhost:5173
+AUTOAUDIT_MOCK=1 uvicorn AutoAudit.app.api.server:app --port 8000 --reload
+
+# 데모 데이터 시드 (최초 1회)
+python scripts/seed_sessions.py --reset
+
+# 프론트엔드
+cd frontend && npm install && npm run dev    # http://localhost:5173
+
+# 파이프라인 전체 실행
+AUTOAUDIT_MOCK=1 python run_pipeline.py --data data/raw/
+
+# mock E2E 테스트
+pytest AutoAudit/tests/test_mock_e2e.py -q
 ```
 
-## 상용화 핵심 기능
+> MockProvider는 해시 기반 **결정적** 응답을 생성하므로 평가 점수가 재현 가능합니다.  
+> 실제 품질 수치가 아닌 파이프라인 동작 검증용입니다.
 
-- **Provider 추상화** (`core/llm_client.py`) — OpenAI/Azure/Anthropic을 설정 한 줄로 전환
-- **비용 가드** — 실행당 예산 상한(circuit breaker) + 토큰/비용 추적
-- **선택적 재시도** — 429/5xx만 재시도, 400은 즉시 실패
-- **Resume/체크포인트** — CP4 항목 단위 멱등 재개 (`--resume <run_id>`)
-- **평가 신뢰성** — N회 샘플링 → 중앙값 + 분산 기반 `low_confidence` 플래그
-- **Evidence View** — 답변 문장 ↔ 근거 컨텍스트 매핑으로 환각 시각화
+---
+
+## 빠른 시작 (실제 LLM)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+
+# 전체 파이프라인 (CP1~CP6)
+python run_pipeline.py --reindex --data data/raw/
+
+# CP3까지만 실행 후 중단
+python run_pipeline.py --until cp3
+
+# 중단된 실행 재개 (체크포인트 기반)
+python run_pipeline.py --resume run_abc123
+
+# 고급 기법 활성화
+python run_pipeline.py --enable calibration,ensemble,nugget
+
+# API 서버
+uvicorn AutoAudit.app.api.server:app --reload --port 8000
+```
+
+### 프론트엔드
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173 (/api → :8000 프록시)
+```
+
+### Docker
+
+```bash
+docker compose up --build   # backend :8000, frontend :8080
+```
+
+---
 
 ## 🔬 고급 평가 기법 (옵션 토글)
 
 모든 기법은 `config/settings.yaml`의 `evaluation:` 블록 또는 CLI `--enable/--disable`로 켜고 끕니다.
-(`EvaluationOptions` — `AutoAudit/app/cp4_evaluator/options.py`)
 
 | 옵션 | 기법 | 효과 | 기본값 |
 |------|------|------|--------|
-| `calibration` | 편향 보정 + G-Eval | 앵커/길이정규화로 leniency·verbosity bias 완화, logprob 기대점수 | off |
-| `ensemble` | 다중 Judge 앙상블 | OpenAI+Anthropic 평가 → 불일치 시 메타 판정 에스컬레이션 | off |
-| `meta_eval` | 골든셋 메타평가 | 인간 라벨 대비 Spearman ρ / Cohen κ / MAE로 "평가자를 평가" | off |
+| `calibration` | 편향 보정 + G-Eval | 앵커/길이정규화로 leniency·verbosity bias 완화 | off |
+| `ensemble` | 다중 Judge 앙상블 | OpenAI+Anthropic 교차 평가 → 불일치 시 메타 판정 에스컬레이션 | off |
+| `meta_eval` | 골든셋 메타평가 | 인간 라벨 대비 Spearman ρ / Cohen κ / MAE | off |
 | `nugget` | Nugget recall | 질문→정보조각 추출 후 컨텍스트 매칭으로 GT-free recall | off |
 | `diagnosis` | 검색 vs 생성 진단 | faithfulness×recall 2×2로 고칠 레이어 자동 분류 | **on** |
 | `statistics` | 부트스트랩 CI + 유의성 회귀 | 신뢰구간 + 순열검정 기반 회귀 감지(거짓알람↓) | **on** |
@@ -78,84 +132,82 @@ python run_pipeline.py --enable ppi,routing
 python run_pipeline.py --enable domain,nugget
 ```
 
-세부 필드도 점 표기로 토글: `--enable calibration.g_eval_logprobs`
+---
 
-## 🧪 로컬 개발 (API 키·무거운 의존성 불필요)
+## 상용화 핵심 기능
 
-`AUTOAUDIT_MOCK=1` 이면 **MockProvider + In-Memory 벡터스토어**로 동작합니다.
-openai/chromadb/sentence-transformers/torch/rank-bm25/numpy 없이, 비용 $0으로
-CP1~CP6 전체 파이프라인·API·대시보드를 돌려볼 수 있습니다.
+| 기능 | 설명 |
+|------|------|
+| **Provider 추상화** | OpenAI/Azure/Anthropic/Gemini를 설정 한 줄로 전환 (`core/llm_client.py`) |
+| **비용 가드** | 실행당 USD 예산 상한(circuit breaker) + 토큰/비용 추적 |
+| **선택적 재시도** | 429/5xx만 재시도, 400은 즉시 실패 (tenacity) |
+| **Resume/체크포인트** | CP4 항목 단위 멱등 재개 (`--resume run_id`) |
+| **평가 신뢰성** | N회 샘플링 → 중앙값 + 분산 기반 `low_confidence` 플래그 |
+| **Evidence View** | 답변 문장 ↔ 근거 컨텍스트 매핑으로 환각 시각화 |
+| **멀티테넌시** | tenant_id 격리 — 가입자별 KB·평가·설정 분리 |
+| **Human Review** | 자동 점수 검수 확정 → Final Score (휴먼 우선) |
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt          # 경량 의존성만
-
-# 원클릭 로컬 실행 (mock)
-./scripts/dev_local.sh                        # 전체 파이프라인
-./scripts/dev_local.sh --enable nugget,domain,routing
-./scripts/dev_local.sh --until cp3
-
-# 또는 환경변수로 직접
-AUTOAUDIT_MOCK=1 python run_pipeline.py --reindex --data data/raw/
-
-# mock E2E 테스트
-pytest AutoAudit/tests/test_mock_e2e.py -q
-```
-
-> MockProvider는 토큰 중첩·해시 기반의 **결정적** 응답을 생성하므로 평가 점수가
-> 재현 가능합니다. 실제 품질 수치가 아닌 파이프라인 동작 검증용입니다.
-
-## 빠른 시작 (실제 LLM)
-
-### 백엔드
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-export OPENAI_API_KEY=sk-...
-
-# 전체 파이프라인 (CP1~CP6)
-python run_pipeline.py --reindex --data data/raw/
-
-# CP3까지만 검증
-python run_pipeline.py --until cp3
-
-# 중단된 실행 재개
-python run_pipeline.py --resume run_abc123
-
-# 고급 평가 기법 토글 (예: 앙상블 + nugget recall 켜고, 진단 끄기)
-python run_pipeline.py --enable ensemble,nugget --disable diagnosis
-
-# API 서버
-uvicorn AutoAudit.app.api.server:app --reload --port 8000
-```
-
-### 프론트엔드
-```bash
-cd frontend
-npm install
-npm run dev        # http://localhost:5173 (/api → :8000 프록시)
-```
-
-### Docker
-```bash
-docker compose up --build   # backend :8000, frontend :8080
-```
+---
 
 ## 테스트
+
 ```bash
-pytest -q          # 126 tests
-ruff check AutoAudit
+pytest AutoAudit/tests/ -q    # 126개 테스트 (mock 모드, API 키 불필요)
+ruff check AutoAudit/         # 린트
 ```
+
+---
 
 ## 설정
-모든 동작은 `config/settings.yaml`에서 제어 (provider/모델/SLA 임계값/샘플링 횟수/예산 등).
+
+모든 동작은 `config/settings.yaml`에서 제어합니다 (provider/모델/SLA 임계값/샘플링 횟수/예산 등).
+
+```yaml
+llm:
+  provider: "openai"       # openai | azure | anthropic | gemini | mock
+  model: "gpt-4o"
+  budget_usd: 50.0         # 실행당 비용 상한
+
+cp5:
+  sla_thresholds:
+    faithfulness: 0.8
+    answer_relevance: 0.75
+    context_precision: 0.7
+    context_recall: 0.7
+```
+
+---
 
 ## 디렉토리
+
 ```
 AutoAudit/app/
-  core/        # 설정·로거·Provider·비용·체크포인트·Tracer
-  cp1~cp6/     # 파이프라인 단계
-  api/         # FastAPI 서버 + 결과 저장소
-  tests/       # 126 tests
-frontend/      # Vite + React 대시보드 (Overview→Drilldown→Evidence)
+  core/          # 설정·로거·Provider·비용·체크포인트·Tracer
+  cp1~cp6/       # 파이프라인 단계
+  api/           # FastAPI 서버 + SQLite 데이터 접근
+  tests/         # 126개 pytest 테스트
+frontend/        # Vite + React 대시보드
+config/          # settings.yaml
+scripts/         # dev_local.sh, seed_sessions.py, export_openapi.py
+docs/            # 산출물 문서
+```
+
+---
+
+## 📄 산출물 문서
+
+| 문서 | 설명 |
+|------|------|
+| [`docs/1_기획서.md`](docs/1_기획서.md) | 제품 목적·기능 요구사항·SLA 기준·마일스톤 |
+| [`docs/2_아키텍처_설계서.md`](docs/2_아키텍처_설계서.md) | 기술 스택·파이프라인 설계·데이터 흐름 |
+| [`docs/3_API_정의서.md`](docs/3_API_정의서.md) | REST API 전체 엔드포인트 명세 |
+| [`docs/4_프로그램_상세_설명서.md`](docs/4_프로그램_상세_설명서.md) | 모듈별 구현 상세·설계 패턴 |
+| [`docs/5_사용자_메뉴얼.md`](docs/5_사용자_메뉴얼.md) | Admin Console 화면별 사용법 (스크린샷 포함) |
+
+---
+
+## GitHub
+
+```
+https://github.com/kchul199/Callbot_AutoAudit
 ```
