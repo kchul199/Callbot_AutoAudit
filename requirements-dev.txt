@@ -1,0 +1,22 @@
+# ============================================================
+# 로컬 개발용 경량 의존성 (AUTOAUDIT_MOCK=1 모드)
+# openai/anthropic/chromadb/sentence-transformers/torch/rank-bm25/numpy 불필요.
+# pip install -r requirements-dev.txt 만으로 전체 파이프라인 + API + 테스트 실행 가능.
+# ============================================================
+
+# Core
+pydantic>=2.0.0
+pyyaml>=6.0
+tenacity>=8.2.0
+
+# API 서버 (대시보드 백엔드)
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0
+
+# Lint
+ruff>=0.5.0

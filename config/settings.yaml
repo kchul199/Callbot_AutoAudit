@@ -1,0 +1,142 @@
+# ============================================================
+# CallBot AutoAudit — 전역 설정
+# ============================================================
+
+project:
+  name: "CallBot_AutoAudit"
+  version: "0.1.0"
+  log_level: "INFO"
+
+# --- 경로 ---
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  results: "data/results"
+  chroma_db: "data/chroma_db"
+
+# --- LLM ---
+llm:
+  provider: "openai"           # openai | azure | anthropic
+  model: "gpt-4o"
+  temperature: 0.0
+  max_tokens: 2048
+  max_retries: 4               # 일시 오류(429/5xx)만 재시도
+  budget_usd: 50.0             # 실행당 비용 상한 (circuit breaker), null=무제한
+  embedding_model: "text-embedding-3-large"
+  embedding_dimensions: 3072
+  azure_api_version: "2024-06-01"
+
+# --- CP1: 전처리 ---
+cp1:
+  supported_formats: ["txt", "json", "csv"]
+  min_turn_length: 5           # 너무 짧은 턴 필터링
+  encoding: "utf-8"
+
+# --- CP2: 지식 베이스 ---
+cp2:
+  parent_chunk_size: 1000      # 부모 청크 토큰 수
+  child_chunk_size: 200        # 자식 청크 토큰 수
+  chunk_overlap: 50
+  collection_name: "callbot_kb"
+  reindex_on_start: false
+
+# --- CP3: 검색 ---
+cp3:
+  top_k: 20                    # 1차 검색 후보 수
+  top_n: 5                     # Reranker 최종 반환 수
+  hyde_enabled: true
+  multi_query_count: 3
+  bm25_weight: 0.3
+  dense_weight: 0.7
+  rrf_k: 60                     # Reciprocal Rank Fusion 상수
+  retrieval_concurrency: 5     # QA 쌍 검색 병렬도
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# --- CP4: 평가 ---
+cp4:
+  metrics:
+    - "faithfulness"
+    - "answer_relevance"
+    - "context_precision"
+    - "context_recall"
+  judge_model: "gpt-4o"
+  judge_temperature: 0.0
+  concurrency: 5               # 동시 평가 수
+  # 신뢰성: 다중 샘플링
+  n_samples: 3                 # 메트릭당 평가 반복 횟수 (1=단일)
+  sample_temperature: 0.4      # 샘플 다양성 확보용 온도
+  low_confidence_std: 0.2      # 샘플 표준편차 임계 (초과 시 low_confidence)
+  # QA 추출 필터
+  min_question_len: 4
+  min_answer_len: 4
+  skip_answer_prefixes: ["안녕하세요", "감사합니다", "네,", "잠시만"]
+  # RAGAS claim 단위 faithfulness
+  faithfulness:
+    use_claim_decomposition: true   # true=claim NLI 분해, false=단일 점수
+    max_claims: 10                  # 답변당 최대 claim 수
+
+# --- 평가 고급 기법 토글 (EvaluationOptions) ---
+# CLI: python run_pipeline.py --enable calibration,ensemble --disable nugget
+evaluation:
+  calibration:                      # Judge 편향 보정 (position/verbosity/leniency)
+    enabled: false
+    position_swap: true
+    length_normalize: true
+    use_anchors: true
+    g_eval_logprobs: false          # logprob 기대점수 (OpenAI 계열만)
+  ensemble:                         # 다중 Judge 앙상블 + 불일치 에스컬레이션
+    enabled: false
+    providers: ["openai", "anthropic"]
+    disagreement_threshold: 0.25
+    escalate_provider: null
+    aggregation: "mean"             # mean | median | escalate
+  meta_eval:                        # 인간 골든셋 대비 Judge 메타평가
+    enabled: false
+    golden_set_path: "data/golden_set.jsonl"
+    metrics: ["spearman", "kappa", "mae"]
+  nugget:                           # Nugget 기반 context recall
+    enabled: false
+    max_nuggets: 8
+  diagnosis:                        # 검색 vs 생성 책임 진단
+    enabled: true
+    recall_threshold: 0.7
+    faithfulness_threshold: 0.8
+  statistics:                       # 부트스트랩 신뢰구간 + 유의성 회귀
+    enabled: true
+    bootstrap_samples: 1000
+    confidence_level: 0.95
+    significance_alpha: 0.05
+  routing:                          # 불확실성 라우팅 + active sampling
+    enabled: false
+    escalate_on_low_confidence: true
+    extra_samples_on_low_conf: 4
+    active_sampling_quota: 20
+    active_sampling_strategy: "uncertainty_sla_boundary"
+  ppi:                              # Prediction-Powered Inference (대량 저비용)
+    enabled: false
+    labeled_fraction: 0.2
+    classifier: "heuristic"         # heuristic | embedding
+  domain:                           # 콜봇 도메인 특화 메트릭
+    enabled: false
+    multiturn_consistency: true
+    safety_compliance: true
+    pii_patterns: ["주민등록번호", "카드번호", "전화번호", "계좌번호"]
+
+# --- CP5: 집계 ---
+cp5:
+  sla_thresholds:
+    faithfulness: 0.8
+    answer_relevance: 0.75
+    context_precision: 0.7
+    context_recall: 0.7
+  group_by: ["call_id", "subscriber_id", "date"]
+
+# --- CP6: 리포트 ---
+cp6:
+  output_format: ["html", "json"]
+  report_dir: "data/results/reports"
+  notify_slack: false
+  slack_webhook_url: ""
+  notify_email: false
+  email_recipients: []
+  regression_threshold: 0.05   # 메트릭 평균 하락폭 임계 (초과 시 회귀)

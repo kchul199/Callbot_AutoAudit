@@ -1,0 +1,266 @@
+"""
+api/server.py
+FastAPI 서버 — 대시보드(프론트엔드)가 호출하는 감사 결과 API.
+
+실행:
+  uvicorn AutoAudit.app.api.server:app --reload --port 8000
+
+엔드포인트:
+  GET /api/health
+  GET /api/runs                              run 목록
+  GET /api/runs/{run_id}/summary            CP5 집계 요약
+  GET /api/runs/{run_id}/evaluations        평가 목록 (필터 지원)
+  GET /api/runs/{run_id}/evaluations/{id}   단일 평가 상세 (Evidence)
+  GET /api/runs/{run_id}/trends             메트릭 추이 (run 누적)
+
+데이터 접근은 DataAccess 파사드(SQLite 우선 + JSON 폴백)에 위임.
+응답은 schemas.py 모델로 타입 고정 → OpenAPI → TS 자동 생성.
+"""
+from __future__ import annotations
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+from AutoAudit.app.api.data_access import DataAccess
+from AutoAudit.app.api.schemas import (
+    AgreementResult,
+    AgreementSample,
+    AuditSummaryResponse,
+    ConversationDetail,
+    ConversationInfo,
+    EvaluationResponse,
+    HealthResponse,
+    JudgeModel,
+    KbStatus,
+    ReviewResult,
+    ReviewSubmit,
+    RunEvalConfig,
+    RunEvalResult,
+    RunInfo,
+    TenantInfo,
+    TenantSettings,
+    TrendsResponse,
+)
+
+app = FastAPI(title="CallBot AutoAudit API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 운영 시 프론트 도메인으로 제한
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 교체 가능한 데이터 접근 (테스트는 server.data = DataAccess(...) 주입)
+data = DataAccess()
+
+
+def _resolve(run_id: str) -> str:
+    return (data.latest_run_id() or "") if run_id == "latest" else run_id
+
+
+@app.get("/api/health", response_model=HealthResponse)
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/api/tenants", response_model=list[TenantInfo])
+def list_tenants() -> list:
+    """가입자 목록 (conversations 테이블에서 tenant 집계)."""
+    tenants = data.list_tenants()
+    if tenants:
+        return tenants
+    # 폴백: 시드 전이면 단일 데모 tenant
+    return [{"tenant_id": "acme", "name": "Acme Telecom (데모)",
+             "conversation_count": 0, "pending_review_count": 0}]
+
+
+@app.get("/api/judges", response_model=list[JudgeModel])
+def list_judges() -> list:
+    """선택 가능한 Judge LLM 목록 (API 키 등록 여부 반영)."""
+    import os
+    mock = os.environ.get("AUTOAUDIT_MOCK") == "1"
+    return [
+        {"provider": "anthropic", "model": "claude-sonnet-4-5", "label": "Anthropic Claude",
+         "available": mock or bool(os.environ.get("ANTHROPIC_API_KEY")),
+         "note": "" if (mock or os.environ.get("ANTHROPIC_API_KEY")) else "키 미등록"},
+        {"provider": "openai", "model": "gpt-4o", "label": "OpenAI GPT-4o",
+         "available": mock or bool(os.environ.get("OPENAI_API_KEY")),
+         "note": "" if (mock or os.environ.get("OPENAI_API_KEY")) else "키 미등록"},
+        {"provider": "gemini", "model": "gemini-2.5-pro", "label": "Google Gemini",
+         "available": mock or bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+         "note": "" if (mock or os.environ.get("GEMINI_API_KEY")) else "키 미등록"},
+        {"provider": "azure", "model": "gpt-4o", "label": "Azure OpenAI",
+         "available": mock or bool(os.environ.get("AZURE_OPENAI_API_KEY")),
+         "note": "" if (mock or os.environ.get("AZURE_OPENAI_API_KEY")) else "키 미등록"},
+        {"provider": "mock", "model": "mock", "label": "Mock (개발용)",
+         "available": True, "note": "비용 $0"},
+    ]
+
+
+@app.post("/api/t/{tenant}/runs", response_model=RunEvalResult)
+def create_run(tenant: str, config: RunEvalConfig) -> dict:
+    """평가 실행. (M3) mock 모드에서는 구성을 EvalRun으로 등록하고 요약 반환."""
+    import os
+    import uuid
+    if os.environ.get("AUTOAUDIT_MOCK") != "1":
+        # prod 실행은 후속(M3.5)에서 파이프라인 연결. 지금은 구성만 검증.
+        raise HTTPException(status_code=501, detail="실 LLM 실행은 아직 미연결 (mock 모드만 지원)")
+    run_id = f"run_{uuid.uuid4().hex[:8]}"
+    convos = data.list_conversations(tenant)
+    n = sum(c.get("turn_count", 0) for c in convos) if "turn" in config.levels else 0
+    return {
+        "run_id": run_id, "tenant_id": tenant, "status": "completed",
+        "judges": config.judges, "levels": config.levels, "methods": config.methods,
+        "total_evaluations": n,
+        "message": f"[mock] 구성 검증 완료 — {len(convos)}개 대화 대상, Judge {', '.join(config.judges)}",
+    }
+
+
+@app.get("/api/t/{tenant}/conversations", response_model=list[ConversationInfo])
+def list_conversations(tenant: str) -> list:
+    """가입자의 대화 세션 목록 (싱글턴/멀티턴)."""
+    return data.list_conversations(tenant)
+
+
+@app.get("/api/t/{tenant}/evaluations", response_model=list[EvaluationResponse])
+def explore_evaluations(
+    tenant: str,
+    level: str | None = None,
+    metric: str | None = None,
+    review_status: str | None = None,
+    low_confidence_only: bool = False,
+    below_metric: str | None = None,
+    below_threshold: float | None = None,
+) -> list:
+    """tenant 평가 탐색 (필터)."""
+    return data.explore_evaluations(
+        tenant, level=level, metric=metric, review_status=review_status,
+        low_confidence_only=low_confidence_only,
+        below_metric=below_metric, below_threshold=below_threshold,
+    )
+
+
+@app.get("/api/t/{tenant}/trends", response_model=TrendsResponse)
+def tenant_trends(
+    tenant: str,
+    group_by: str = "run",
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """tenant 메트릭 추이 (group_by=day|run, 일자 범위 필터)."""
+    return data.tenant_trends(tenant, group_by=group_by, date_from=date_from, date_to=date_to)
+
+
+@app.get("/api/t/{tenant}/agreement", response_model=AgreementResult)
+def tenant_agreement(tenant: str) -> dict:
+    """휴먼 vs 자동 일치도."""
+    return data.agreement(tenant)
+
+
+@app.get("/api/t/{tenant}/agreement/{metric}", response_model=list[AgreementSample])
+def tenant_agreement_samples(tenant: str, metric: str) -> list:
+    """특정 메트릭의 휴먼·자동 표본 상세 (드릴다운)."""
+    return data.agreement_samples(tenant, metric)
+
+
+@app.get("/api/t/{tenant}/kb", response_model=KbStatus)
+def tenant_kb(tenant: str) -> dict:
+    """tenant 지식베이스 현황 + 검색 커버리지 갭."""
+    return data.kb_status(tenant)
+
+
+@app.get("/api/t/{tenant}/settings", response_model=TenantSettings)
+def get_settings(tenant: str) -> dict:
+    """tenant 설정 조회."""
+    return data.get_settings(tenant)
+
+
+@app.put("/api/t/{tenant}/settings", response_model=TenantSettings)
+def put_settings(tenant: str, settings: TenantSettings) -> dict:
+    """tenant 설정 저장."""
+    return data.save_settings(tenant, settings.model_dump(exclude={"tenant_id"}))
+
+
+@app.get("/api/t/{tenant}/review-queue", response_model=list[EvaluationResponse])
+def review_queue(tenant: str) -> list:
+    """검수 대기 평가 (저신뢰·미검수 우선순위)."""
+    return data.review_queue(tenant)
+
+
+@app.get("/api/evaluations/{eval_id}", response_model=EvaluationResponse)
+def get_evaluation_single(eval_id: str) -> dict:
+    """단일 평가 상세 (검수 워크스페이스용, run 무관)."""
+    rec = data.get_evaluation_any(eval_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"evaluation not found: {eval_id}")
+    return rec
+
+
+@app.post("/api/review/{eval_id}", response_model=ReviewResult)
+def submit_review(eval_id: str, body: ReviewSubmit) -> dict:
+    """휴먼 재평가 확정 — Final Score 갱신 + 골든셋 적재."""
+    ok = data.record_review(
+        eval_id, status=body.status, human_scores=body.human_scores,
+        labels=body.labels, comment=body.comment, reviewer=body.reviewer,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"evaluation not found: {eval_id}")
+    return {"eval_id": eval_id, "ok": True, "review_status": body.status}
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
+def get_conversation(conversation_id: str) -> dict:
+    """세션 상세 — 대화 타임라인 + 턴/세션 평가."""
+    conv = data.get_conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail=f"conversation not found: {conversation_id}")
+    return conv
+
+
+@app.get("/api/runs", response_model=list[RunInfo])
+def list_runs() -> list:
+    return data.list_runs()
+
+
+@app.get("/api/runs/{run_id}/summary", response_model=AuditSummaryResponse)
+def get_summary(run_id: str) -> dict:
+    summary = data.get_summary(_resolve(run_id))
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"summary not found: {run_id}")
+    return summary
+
+
+@app.get("/api/runs/{run_id}/evaluations", response_model=list[EvaluationResponse])
+def get_evaluations(
+    run_id: str,
+    call_id: str | None = None,
+    subscriber_id: str | None = None,
+    flagged_only: bool = False,
+    low_confidence_only: bool = False,
+    below_metric: str | None = None,
+    below_threshold: float | None = Query(None, ge=0.0, le=1.0),
+) -> list:
+    return data.get_evaluations(
+        _resolve(run_id),
+        call_id=call_id,
+        subscriber_id=subscriber_id,
+        flagged_only=flagged_only,
+        low_confidence_only=low_confidence_only,
+        below_metric=below_metric,
+        below_threshold=below_threshold,
+    )
+
+
+@app.get("/api/runs/{run_id}/evaluations/{eval_id}", response_model=EvaluationResponse)
+def get_evaluation(run_id: str, eval_id: str) -> dict:
+    rec = data.get_evaluation(_resolve(run_id), eval_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"evaluation not found: {eval_id}")
+    return rec
+
+
+@app.get("/api/runs/{run_id}/trends", response_model=TrendsResponse)
+def get_trends(run_id: str) -> dict:
+    """전체 run의 메트릭 평균 추이 (회귀 감지용)"""
+    return data.trends()

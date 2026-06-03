@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Run Evaluation — CallBot AutoAudit (시안)</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* 마법사 전용 */
+  .wizard { display: grid; grid-template-columns: 220px 1fr; gap: 22px; align-items: start; }
+  .steps { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 2px; }
+  .step { display: flex; gap: 11px; padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer; }
+  .step:hover { background: var(--surface-2); }
+  .step.active { background: var(--accent-soft); }
+  .step .num { width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2);
+    color: var(--text-muted); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+  .step.active .num { background: var(--accent); color: #fff; }
+  .step.done .num { background: var(--ok); color: #fff; }
+  .step .t { font-size: 13px; font-weight: 600; }
+  .step .d { font-size: 11.5px; color: var(--text-faint); }
+
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .opt { border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 13px 15px; cursor: pointer; position: relative; }
+  .opt:hover { border-color: var(--accent); }
+  .opt.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .opt .ot { font-weight: 600; font-size: 13.5px; display:flex; align-items:center; gap:7px; }
+  .opt .od { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .opt .chk { position: absolute; top: 12px; right: 13px; width: 18px; height: 18px; border-radius: 5px;
+    border: 1.5px solid var(--border-strong); display:grid; place-items:center; font-size: 11px; color:#fff; }
+  .opt.sel .chk { background: var(--accent); border-color: var(--accent); }
+
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+  .seg button { border: none; background: var(--surface); padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--text-muted); font-family:inherit; }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+  .judge-row { display:flex; align-items:center; gap:10px; padding:11px 13px; border:1px solid var(--border); border-radius: var(--radius-sm); margin-bottom:8px; }
+  .judge-logo { width:26px;height:26px;border-radius:6px; display:grid;place-items:center;font-size:14px;font-weight:700;color:#fff; }
+  .preset-chip { padding:7px 13px; border:1px solid var(--border-strong); border-radius:999px; font-size:12.5px; cursor:pointer; }
+  .preset-chip:hover{ border-color:var(--accent); color:var(--accent-text); }
+  .preset-chip.on{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+  .summary-row { display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px dashed var(--border); font-size:13px; }
+  .summary-row b { font-weight:600; }
+  .cost-box { background: var(--ok-soft); color: var(--ok); border-radius: var(--radius); padding: 14px 16px; font-size:13px; }
+  .wizard-foot { display:flex; justify-content:space-between; margin-top:20px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">🤖</span> <div>CallBot AutoAudit<small>품질 평가 콘솔</small></div></div>
+    <nav class="nav">
+      <div class="nav-section">모니터링</div>
+      <div class="nav-item"><span class="ico">🏠</span> Overview</div>
+      <div class="nav-item"><span class="ico">💬</span> Conversations</div>
+      <div class="nav-section">평가</div>
+      <div class="nav-item active"><span class="ico">▶</span> Run Evaluation</div>
+      <div class="nav-item"><span class="ico">✅</span> Review <span class="badge bad badge-count">23</span></div>
+      <div class="nav-item"><span class="ico">🔍</span> Evaluations</div>
+      <div class="nav-item"><span class="ico">📈</span> Trends</div>
+      <div class="nav-section">설정</div>
+      <div class="nav-item"><span class="ico">📚</span> Knowledge Base</div>
+      <div class="nav-item"><span class="ico">⚙️</span> Settings</div>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="theme-toggle" onclick="toggleTheme()">🌗 테마</span>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="topbar">
+      <div class="crumb">Run Evaluation / <b>New Run</b></div>
+      <div class="spacer"></div>
+      <div class="switcher"><span class="dot"></span> Acme Telecom <span class="chev">▼</span></div>
+      <span class="env-badge">MOCK</span>
+    </header>
+
+    <div class="content">
+      <div class="page-head">
+        <div>
+          <h1>새 평가 실행</h1>
+          <div class="sub">평가자(LLM)·대상 레벨·정확도 방법론을 구성해 평가배치를 실행합니다.</div>
+        </div>
+      </div>
+
+      <div class="wizard">
+        <!-- Steps rail -->
+        <div class="steps">
+          <div class="step done"><span class="num">✓</span><div><div class="t">대상 선택</div><div class="d">대화 320건</div></div></div>
+          <div class="step active"><span class="num">2</span><div><div class="t">Judge 모델</div><div class="d">Claude + GPT-4o</div></div></div>
+          <div class="step"><span class="num">3</span><div><div class="t">평가 레벨</div><div class="d">검색·답변·세션</div></div></div>
+          <div class="step"><span class="num">4</span><div><div class="t">메트릭</div><div class="d">6개 선택</div></div></div>
+          <div class="step"><span class="num">5</span><div><div class="t">정확도 방법론</div><div class="d">4개 활성</div></div></div>
+          <div class="step"><span class="num">6</span><div><div class="t">검토 & 실행</div><div class="d">$0 (mock)</div></div></div>
+        </div>
+
+        <!-- Step body: Judge + (preview of others) -->
+        <div>
+          <!-- STEP 2: Judge 모델 -->
+          <div class="card card-pad" style="margin-bottom:16px;">
+            <h3>② 평가자(Judge) 모델 선택</h3>
+            <div class="card-sub">여러 LLM으로 평가할 수 있습니다. 앙상블 시 모델 간 불일치를 메타 판정으로 해소합니다.</div>
+
+            <div class="field">
+              <label>평가 방식</label>
+              <div class="seg">
+                <button>단일 Judge</button>
+                <button class="on">앙상블 (교차검증)</button>
+              </div>
+              <div class="hint">앙상블: 2개 이상 모델이 평가 → 점수 표준편차가 임계 초과 시 상위 모델로 메타 판정. 정확도↑·비용↑</div>
+            </div>
+
+            <div class="field">
+              <label>참여 모델</label>
+              <div class="judge-row">
+                <span class="judge-logo" style="background:#d97757;">A</span>
+                <div class="col"><b>Anthropic Claude</b> <span class="faint mono">claude-sonnet-4.6</span></div>
+                <span class="badge ok">기본</span>
+                <div class="opt sel" style="padding:0;border:none;"><span class="chk" style="position:static;">✓</span></div>
+              </div>
+              <div class="judge-row">
+                <span class="judge-logo" style="background:#10a37f;">O</span>
+                <div class="col"><b>OpenAI</b> <span class="faint mono">gpt-4o</span></div>
+                <div class="opt sel" style="padding:0;border:none;"><span class="chk" style="position:static;">✓</span></div>
+              </div>
+              <div class="judge-row" style="opacity:.65;">
+                <span class="judge-logo" style="background:#4285f4;">G</span>
+                <div class="col"><b>Google Gemini</b> <span class="faint mono">gemini-2.5-pro</span></div>
+                <span class="badge warn">키 미등록</span>
+                <div class="opt" style="padding:0;border:none;"><span class="chk" style="position:static;"></span></div>
+              </div>
+              <div class="judge-row" style="opacity:.65;">
+                <span class="judge-logo" style="background:#0078d4;">Az</span>
+                <div class="col"><b>Azure OpenAI</b> <span class="faint mono">gpt-4o (deployment)</span></div>
+                <div class="opt" style="padding:0;border:none;"><span class="chk" style="position:static;"></span></div>
+              </div>
+            </div>
+
+            <div class="row">
+              <div class="field col"><label>Temperature</label><input type="number" value="0.0" step="0.1"></div>
+              <div class="field col"><label>불일치 임계 (std)</label><input type="number" value="0.25" step="0.05"></div>
+              <div class="field col"><label>배치 예산 상한</label><input type="text" value="$0 (mock)"></div>
+            </div>
+          </div>
+
+          <!-- STEP 3 preview: 레벨 -->
+          <div class="card card-pad" style="margin-bottom:16px;">
+            <h3>③ 평가 레벨</h3>
+            <div class="card-sub">검색 품질과 답변 품질을 독립적으로 평가합니다.</div>
+            <div class="opt-grid" style="grid-template-columns:1fr 1fr 1fr;">
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">🔎 Retrieval</div><div class="od">검색된 컨텍스트 품질 (precision·recall·순위)</div></div>
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">💬 턴(답변)</div><div class="od">생성 답변 품질 (faithfulness·relevance)</div></div>
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">🧵 세션</div><div class="od">멀티턴 일관성·해결 여부</div></div>
+            </div>
+          </div>
+
+          <!-- STEP 5 preview: 정확도 방법론 -->
+          <div class="card card-pad">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div><h3>⑤ 정확도 향상 방법론</h3><div class="card-sub">검증 신뢰도를 높이는 기법을 선택합니다.</div></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+              <span class="faint" style="align-self:center;font-size:12px;">프리셋:</span>
+              <span class="preset-chip">빠른 점검</span>
+              <span class="preset-chip on">고신뢰</span>
+              <span class="preset-chip">검색 진단</span>
+              <span class="preset-chip">안전성 감사</span>
+            </div>
+            <div class="opt-grid">
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">🎯 Calibration</div><div class="od">편향 보정 + G-Eval 기대점수</div></div>
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">🤝 Ensemble</div><div class="od">다중 LLM 교차 + 불일치 에스컬레이션</div></div>
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">🧩 Claim 분해 (RAGAS)</div><div class="od">답변을 claim 단위로 NLI 판정</div></div>
+              <div class="opt"><span class="chk"></span><div class="ot">💎 Nugget Recall</div><div class="od">질문 핵심정보의 검색 커버리지</div></div>
+              <div class="opt sel"><span class="chk">✓</span><div class="ot">📊 Statistics</div><div class="od">부트스트랩 신뢰구간 + 유의성 회귀</div></div>
+              <div class="opt"><span class="chk"></span><div class="ot">🔀 Routing</div><div class="od">저신뢰 항목 추가샘플 + 검수 큐</div></div>
+              <div class="opt"><span class="chk"></span><div class="ot">🩺 Diagnosis</div><div class="od">검색 vs 생성 책임 2×2 진단</div></div>
+              <div class="opt"><span class="chk"></span><div class="ot">🛡️ Domain (안전성)</div><div class="od">PII·컴플라이언스·멀티턴 일관성</div></div>
+            </div>
+          </div>
+
+          <div class="wizard-foot">
+            <button class="btn ghost">← 이전</button>
+            <div style="display:flex;gap:10px;">
+              <button class="btn">초안 저장</button>
+              <button class="btn primary">다음: 메트릭 →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function toggleTheme(){const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';}
+document.querySelectorAll('.opt').forEach(o=>o.addEventListener('click',()=>{
+  if(o.querySelector('.chk')){o.classList.toggle('sel');o.querySelector('.chk').textContent=o.classList.contains('sel')?'✓':'';}
+}));
+</script>
+</body>
+</html>

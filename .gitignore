@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# 데이터/결과 (Trace는 로컬 보관)
+data/chroma_db/
+data/results/
+data/processed/
+
+# 환경
+.env
+
+# 프론트엔드
+frontend/node_modules/
+frontend/dist/
+
+# 자동 생성물 (gen:api로 재생성)
+frontend/openapi.json
+
+# 로그
+*.log
+.gstack/
+
+# macOS
+.DS_Store

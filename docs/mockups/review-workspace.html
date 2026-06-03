@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Review Workspace — CallBot AutoAudit (시안)</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  .review-layout { display: grid; grid-template-columns: 280px 1fr 360px; gap: 0; height: calc(100vh - var(--topbar-h)); }
+
+  /* 좌: 검수 큐 */
+  .queue { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); }
+  .queue-head { padding: 14px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+  .queue-head .qtitle { font-weight: 700; font-size: 14px; display:flex; justify-content:space-between; align-items:center; }
+  .qprog { height: 6px; background: var(--surface-2); border-radius: 999px; margin-top: 10px; overflow: hidden; }
+  .qprog > div { height: 100%; width: 23%; background: var(--accent); }
+  .qmeta { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; }
+  .qitem { padding: 11px 16px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 3px solid transparent; }
+  .qitem:hover { background: var(--surface-2); }
+  .qitem.active { background: var(--accent-soft); border-left-color: var(--accent); }
+  .qitem .qtop { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .qitem .qq { font-size: 13px; font-weight: 500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .qitem .qtags { display:flex; gap:5px; margin-top:6px; }
+
+  /* 중: 대화 컨텍스트 */
+  .convo { overflow-y: auto; padding: 20px 24px; }
+  .convo-head { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .turn { margin-bottom: 18px; }
+  .bubble { padding: 11px 14px; border-radius: var(--radius); max-width: 80%; font-size: 13.5px; }
+  .bubble.user { background: var(--surface-2); border:1px solid var(--border); }
+  .bubble.bot { background: var(--accent-soft); border:1px solid color-mix(in srgb, var(--accent) 25%, transparent); margin-left:auto; }
+  .turn .who { font-size: 11px; color: var(--text-faint); margin-bottom:4px; font-weight:600; }
+  .turn.botwrap { display:flex; flex-direction:column; align-items:flex-end; }
+  .turn-eval { display:flex; gap:6px; margin-top:8px; justify-content:flex-end; }
+  .sent.grounded { background: var(--ok-soft); border-bottom:2px solid var(--ok); border-radius:3px; padding:0 2px; }
+  .sent.ungrounded { background: var(--bad-soft); border-bottom:2px solid var(--bad); border-radius:3px; padding:0 2px; }
+  .ctx-card { border:1px solid var(--border); border-radius:var(--radius-sm); padding:11px 13px; margin-top:8px; font-size:12.5px; background:var(--surface); }
+  .ctx-card.used { border-left:3px solid var(--ok); }
+  .ctx-meta { display:flex; justify-content:space-between; color:var(--text-faint); font-size:11px; margin-bottom:5px; }
+  .legend { display:flex; gap:14px; font-size:11.5px; margin:6px 0 14px; color:var(--text-muted); }
+  .legend i { display:inline-block; width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px; }
+
+  /* 우: 재평가 패널 */
+  .review-panel { border-left: 1px solid var(--border); background: var(--surface); overflow-y:auto; display:flex; flex-direction:column; }
+  .rp-head { padding: 15px 18px; border-bottom: 1px solid var(--border); }
+  .rp-body { padding: 16px 18px; flex:1; }
+  .metric-edit { border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px 13px; margin-bottom:12px; }
+  .metric-edit .me-top { display:flex; justify-content:space-between; align-items:center; }
+  .me-name { font-weight:600; font-size:13px; }
+  .auto-score { font-size:12px; color:var(--text-muted); }
+  .score-pills { display:flex; gap:5px; margin-top:9px; flex-wrap:wrap; }
+  .pill { width:34px; height:30px; border:1px solid var(--border-strong); border-radius:6px; display:grid; place-items:center;
+    font-size:12px; cursor:pointer; }
+  .pill:hover{ border-color:var(--accent); }
+  .pill.auto { border-color:var(--text-faint); position:relative; }
+  .pill.sel { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:700; }
+  .me-reason { font-size:11.5px; color:var(--text-muted); margin-top:8px; }
+  .agree-row{ display:flex;gap:8px;margin-top:9px; }
+  .rp-foot { padding: 14px 18px; border-top:1px solid var(--border); display:flex; gap:8px; position:sticky; bottom:0; background:var(--surface); }
+  .kbd { font-family:var(--mono); font-size:10.5px; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:4px; padding:1px 5px; color:var(--text-muted); }
+  .claim { font-size:12px; padding:4px 0; display:flex; gap:7px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">🤖</span> <div>CallBot AutoAudit<small>품질 평가 콘솔</small></div></div>
+    <nav class="nav">
+      <div class="nav-section">모니터링</div>
+      <div class="nav-item"><span class="ico">🏠</span> Overview</div>
+      <div class="nav-item"><span class="ico">💬</span> Conversations</div>
+      <div class="nav-section">평가</div>
+      <div class="nav-item"><span class="ico">▶</span> Run Evaluation</div>
+      <div class="nav-item active"><span class="ico">✅</span> Review <span class="badge bad badge-count">23</span></div>
+      <div class="nav-item"><span class="ico">🔍</span> Evaluations</div>
+      <div class="nav-item"><span class="ico">📈</span> Trends</div>
+      <div class="nav-section">설정</div>
+      <div class="nav-item"><span class="ico">📚</span> Knowledge Base</div>
+      <div class="nav-item"><span class="ico">⚙️</span> Settings</div>
+    </nav>
+    <div class="sidebar-foot"><span class="theme-toggle" onclick="toggleTheme()">🌗 테마</span></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="crumb">Review / <b>휴먼 재평가</b></div>
+      <div class="spacer"></div>
+      <div class="switcher"><span class="dot"></span> Acme Telecom <span class="chev">▼</span></div>
+      <div class="switcher">배치 <b style="margin:0 4px;">#run_4db0</b> <span class="chev">▼</span></div>
+      <span class="env-badge">MOCK</span>
+    </header>
+
+    <div class="review-layout">
+      <!-- 좌: 큐 -->
+      <div class="queue">
+        <div class="queue-head">
+          <div class="qtitle">검수 큐 <span class="badge accent">우선순위</span></div>
+          <div class="qprog"><div></div></div>
+          <div class="qmeta">45 / 320 완료 · 평균 23초/건 · 자동·휴먼 일치율 82%</div>
+        </div>
+        <div class="qitem active">
+          <div class="qtop"><span class="badge bad">환각 의심</span><span class="faint mono" style="font-size:11px;">conf .41</span></div>
+          <div class="qq">요금제를 변경하고 싶은데요.</div>
+          <div class="qtags"><span class="badge outline">멀티턴</span><span class="badge warn">faith 0.30</span></div>
+        </div>
+        <div class="qitem">
+          <div class="qtop"><span class="badge warn">SLA 경계</span><span class="faint mono" style="font-size:11px;">conf .55</span></div>
+          <div class="qq">데이터 무제한 요금제 얼마예요?</div>
+          <div class="qtags"><span class="badge outline">싱글턴</span><span class="badge warn">recall 0.68</span></div>
+        </div>
+        <div class="qitem">
+          <div class="qtop"><span class="badge info">낮은 신뢰도</span><span class="faint mono" style="font-size:11px;">conf .49</span></div>
+          <div class="qq">해지하면 위약금 있나요?</div>
+          <div class="qtags"><span class="badge outline">멀티턴</span><span class="badge bad">검색실패</span></div>
+        </div>
+        <div class="qitem">
+          <div class="qtop"><span class="badge">미검수</span><span class="faint mono" style="font-size:11px;">conf .72</span></div>
+          <div class="qq">유심 재발급 어디서 하나요?</div>
+          <div class="qtags"><span class="badge outline">싱글턴</span></div>
+        </div>
+      </div>
+
+      <!-- 중: 대화 + 근거 -->
+      <div class="convo">
+        <div class="convo-head">
+          <span class="badge outline">멀티턴 · 6턴</span>
+          <span class="faint mono">conversation C001 · 가입자 SUB_0042 · 2026-06-01 09:00</span>
+          <div class="spacer"></div>
+          <span class="badge info">세션 일관성 0.9</span>
+        </div>
+
+        <div class="turn">
+          <div class="who">👤 사용자 · 턴 3</div>
+          <div class="bubble user">본인 확인은 어떻게 하나요?</div>
+        </div>
+        <div class="turn botwrap">
+          <div class="who">🤖 콜봇 · 평가 대상</div>
+          <div class="bubble bot">
+            <span class="sent grounded">주민등록번호 앞 6자리와 뒷자리를 말씀해 주시거나,</span>
+            <span class="sent grounded">고객 비밀번호 4자리를 입력해 주시면 됩니다.</span>
+            <span class="sent ungrounded">또한 가까운 대리점에서 지문 인증도 가능합니다.</span>
+          </div>
+          <div class="turn-eval">
+            <span class="badge ok">relevance 1.0</span>
+            <span class="badge bad">faithfulness 0.30</span>
+          </div>
+        </div>
+
+        <div class="legend">
+          <span><i style="background:var(--ok-soft);border:1px solid var(--ok)"></i>근거 있음</span>
+          <span><i style="background:var(--bad-soft);border:1px solid var(--bad)"></i>근거 없음(환각 의심)</span>
+        </div>
+
+        <h3 style="font-size:13px;margin:18px 0 4px;">🔎 검색된 컨텍스트 (Retrieval 평가: precision 0.90)</h3>
+        <div class="ctx-card used">
+          <div class="ctx-meta"><span>chunk 64cccc9d · 본인확인 안내</span><span>rerank 0.98 · dense 0.57 · bm25 0.29</span></div>
+          본인 확인은 주민등록번호 또는 고객 비밀번호 4자리로 가능합니다.
+        </div>
+        <div class="ctx-card">
+          <div class="ctx-meta"><span>chunk a12f · 요금제 안내</span><span>rerank 0.41</span></div>
+          5G 프리미엄 요금제는 월 69,000원에 데이터 무제한을 제공합니다.
+        </div>
+        <p class="faint" style="font-size:11.5px;">⚠ "대리점 지문 인증"은 어느 컨텍스트에도 없음 → 환각으로 판정됨</p>
+      </div>
+
+      <!-- 우: 재평가 패널 -->
+      <div class="review-panel">
+        <div class="rp-head">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <b>재평가</b>
+            <span class="badge accent">Judge: Claude+GPT 앙상블</span>
+          </div>
+          <div class="faint" style="font-size:11.5px;margin-top:4px;">자동 점수를 검토하고 동의 또는 수정하세요.</div>
+        </div>
+        <div class="rp-body">
+          <!-- faithfulness -->
+          <div class="metric-edit">
+            <div class="me-top"><span class="me-name">Faithfulness</span><span class="auto-score">자동 <b style="color:var(--bad)">0.30</b></span></div>
+            <div class="score-pills">
+              <span class="pill">0</span>
+              <span class="pill sel">.25</span>
+              <span class="pill auto">.5</span>
+              <span class="pill">.75</span>
+              <span class="pill">1</span>
+            </div>
+            <div class="me-reason">claim 3개 중 2개 지지, 1개 환각(대리점 지문). 검수자: 0.25로 하향 (환각 명확)</div>
+            <div class="claim">✅ <span>주민번호로 본인확인</span></div>
+            <div class="claim">✅ <span>비밀번호 4자리로 확인</span></div>
+            <div class="claim" style="color:var(--bad)">❌ <span>대리점 지문 인증 (컨텍스트 없음)</span></div>
+          </div>
+
+          <!-- relevance -->
+          <div class="metric-edit">
+            <div class="me-top"><span class="me-name">Answer Relevance</span><span class="auto-score">자동 <b style="color:var(--ok)">1.00</b></span></div>
+            <div class="score-pills">
+              <span class="pill">0</span><span class="pill">.25</span><span class="pill">.5</span><span class="pill">.75</span><span class="pill sel auto">1</span>
+            </div>
+            <div class="agree-row"><span class="badge ok">✓ 자동과 동의</span></div>
+          </div>
+
+          <!-- context recall -->
+          <div class="metric-edit">
+            <div class="me-top"><span class="me-name">Context Recall (Retrieval)</span><span class="auto-score">자동 <b style="color:var(--ok)">0.98</b></span></div>
+            <div class="score-pills">
+              <span class="pill">0</span><span class="pill">.25</span><span class="pill">.5</span><span class="pill">.75</span><span class="pill sel auto">1</span>
+            </div>
+            <div class="agree-row"><span class="badge ok">✓ 자동과 동의</span></div>
+          </div>
+
+          <div class="field" style="margin-top:6px;">
+            <label>라벨 / 코멘트</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+              <span class="badge bad">환각</span><span class="badge outline">+ 검색실패</span><span class="badge outline">+ 양호</span>
+            </div>
+            <textarea rows="2" placeholder="검수 코멘트...">대리점 지문 인증은 사실이 아님. 프롬프트 grounding 강화 필요.</textarea>
+          </div>
+        </div>
+        <div class="rp-foot">
+          <button class="btn ghost sm">보류 <span class="kbd">J</span></button>
+          <div class="spacer" style="flex:1"></div>
+          <button class="btn sm">수정 확정 <span class="kbd">E</span></button>
+          <button class="btn primary sm">승인 & 다음 <span class="kbd">A</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function toggleTheme(){const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';}
+document.querySelectorAll('.score-pills').forEach(g=>g.addEventListener('click',e=>{
+  if(e.target.classList.contains('pill')){g.querySelectorAll('.pill').forEach(p=>p.classList.remove('sel'));e.target.classList.add('sel');}
+}));
+document.querySelectorAll('.qitem').forEach(q=>q.addEventListener('click',()=>{
+  document.querySelectorAll('.qitem').forEach(x=>x.classList.remove('active'));q.classList.add('active');
+}));
+</script>
+</body>
+</html>

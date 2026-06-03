@@ -1,0 +1,25 @@
+[project]
+name = "callbot-autoaudit"
+version = "0.1.0"
+description = "RAG 품질 자동 감사 파이프라인 (CP1~CP6)"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "frontend", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]  # 줄길이는 formatter에 위임, FastAPI Depends 패턴 허용
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+ignore_missing_imports = true   # chromadb/sentence_transformers 등 stub 부재 허용
+disallow_untyped_defs = false
+exclude = ["frontend", "data", ".venv", "tests"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["AutoAudit/tests"]

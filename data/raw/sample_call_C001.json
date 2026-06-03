@@ -1,0 +1,19 @@
+{
+  "call_id": "C001",
+  "subscriber_id": "SUB_0042",
+  "started_at": "2024-06-01T09:00:00",
+  "ended_at": "2024-06-01T09:08:30",
+  "turns": [
+    {"role": "user", "content": "안녕하세요, 요금제를 변경하고 싶은데요.", "timestamp": "2024-06-01T09:00:05"},
+    {"role": "bot", "content": "안녕하세요! 요금제 변경을 도와드리겠습니다. 현재 어떤 요금제를 사용 중이신가요?", "timestamp": "2024-06-01T09:00:08"},
+    {"role": "user", "content": "지금 5G 기본 요금제인데, 데이터를 더 많이 쓸 수 있는 요금제로 바꾸고 싶어요.", "timestamp": "2024-06-01T09:00:20"},
+    {"role": "bot", "content": "네, 5G 데이터 확장 요금제로 변경 가능합니다. 월 69,000원의 5G 프리미엄 요금제는 데이터 무제한 제공됩니다. 변경을 원하시면 본인 확인이 필요합니다.", "timestamp": "2024-06-01T09:00:35"},
+    {"role": "user", "content": "본인 확인은 어떻게 하나요?", "timestamp": "2024-06-01T09:01:00"},
+    {"role": "bot", "content": "주민등록번호 앞 6자리와 뒷자리를 말씀해 주시거나, 고객 비밀번호 4자리를 입력해 주시면 됩니다.", "timestamp": "2024-06-01T09:01:10"}
+  ],
+  "metadata": {
+    "channel": "callbot",
+    "resolution": "success",
+    "call_duration_sec": 510
+  }
+}
