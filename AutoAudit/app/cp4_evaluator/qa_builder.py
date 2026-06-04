@@ -41,7 +41,7 @@ class QAPairBuilder:
     # ----------------------------------------------------------
 
     def extract_pairs(self, call_log: CallLog) -> list[QAPair]:
-        """단일 콜에서 (User질문, Bot답변) 쌍 추출"""
+        """단일 콜에서 (User질문, Bot답변) 쌍 추출 + 직전 대화 맥락(history) 부착"""
         pairs: list[QAPair] = []
         turns = call_log.turns
         i = 0
@@ -50,6 +50,7 @@ class QAPairBuilder:
             if turns[i].role != TurnRole.USER:
                 i += 1
                 continue
+            q_start = i  # ③ 대화 맥락: 이 질문 이전 모든 턴이 history
             q_parts = []
             while i < len(turns) and turns[i].role == TurnRole.USER:
                 q_parts.append(turns[i].content)
@@ -77,11 +78,24 @@ class QAPairBuilder:
                     question=question,
                     bot_answer=answer,
                     turn_index=q_turn_index,
+                    history=self._format_history(turns[:q_start]),
                 )
             )
 
         logger.info(f"[{call_log.call_id}] extracted {len(pairs)} QA pairs")
         return pairs
+
+    @staticmethod
+    def _format_history(prior_turns: list) -> list[str]:
+        """직전 턴들을 '역할: 내용' 문자열 목록으로 변환 (③ 대화 맥락 주입용)."""
+        role_kr = {"user": "고객", "bot": "콜봇", "system": "시스템"}
+        out: list[str] = []
+        for t in prior_turns:
+            who = role_kr.get(t.role.value, t.role.value)
+            content = (t.content or "").strip()
+            if content:
+                out.append(f"{who}: {content}")
+        return out
 
     def extract_from_logs(self, call_logs: list[CallLog]) -> list[QAPair]:
         pairs: list[QAPair] = []

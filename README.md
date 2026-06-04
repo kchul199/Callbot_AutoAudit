@@ -113,6 +113,11 @@ docker compose up --build   # backend :8000, frontend :8080
 |------|------|------|--------|
 | `cot` | **Chain-of-Thought 강제** | '근거 먼저, 점수 나중' 단계 추론 → 점수 선결정 편향 차단 (추가 비용 없음) | **on** |
 | `reverse` | **역방향 검증** | 순방향+역방향 양방향 평가 → 불일치 시 저신뢰 플래그 → 환각 누락 탐지↑ | off |
+| `correctness` | **정답성 + 참조 채점** ①② | 정답 대비 claim F1+유사도 → "충실하지만 틀린 답변" 포착, answer_relevance에 정답 주입 | off |
+| `context_injection` | **대화 맥락 주입** ③ | 직전 N턴 이력 주입 → 후속 턴(지시대명사·생략) 오채점 제거 (비용 0) | off |
+| `abstention` | **적정 거절 면제** ④ | 정당한 "정보 없음/거절"의 감점 면제 → 거짓 실패 제거 | off |
+| `numeric_guard` | **결정적 수치 가드** ⑤ | 숫자·금액·날짜를 컨텍스트와 대조 → 수치 환각 포착 (LLM 0) | off |
+| `auto_calibration` | **휴먼 정합 자동 보정** ⑦ | 골든셋으로 점수를 사람 척도로 교정(isotonic/platt/linear) + SLA 자동 튜닝 | off |
 | `calibration` | 편향 보정 + G-Eval | 앵커/길이정규화로 leniency·verbosity bias 완화 | off |
 | `ensemble` | 다중 Judge 앙상블 | OpenAI+Anthropic 교차 평가 → 불일치 시 메타 판정 에스컬레이션 | off |
 | `meta_eval` | 골든셋 메타평가 | 인간 라벨 대비 Spearman ρ / Cohen κ / MAE | off |
@@ -135,6 +140,12 @@ python run_pipeline.py --enable ppi,routing --disable cot
 
 # 콜봇 안전성 감사 프로필
 python run_pipeline.py --enable domain,nugget
+
+# 정답 데이터 기반 정밀 감사 (정답성 + 참조 채점 + 수치 가드)
+python run_pipeline.py --enable correctness,numeric_guard
+
+# 멀티턴 콜봇 + 거절 면제 (비용 증가 거의 없음)
+python run_pipeline.py --enable context_injection,abstention,numeric_guard
 ```
 
 ### CoT + 역방향 검증 동작 원리
@@ -150,6 +161,29 @@ python run_pipeline.py --enable domain,nugget
   역방향: 컨텍스트 → 답변 도출 가능성 (reverse_score)
   최종점수 = forward × 0.6 + reverse × 0.4
   |forward - reverse| > 0.25 → is_low_confidence=True → 사람 검수 우선
+```
+
+### 답변 품질 정확도 강화 동작 원리 (①~⑤,⑦)
+
+```
+[① 정답성 + ② 참조 채점] — answer_correctness (ground_truth 필요)
+  정답 vs 답변 → TP/FP/FN 분류 → F1 = 2·TP/(2·TP+FP+FN)
+  최종 = F1 × 0.75 + 의미유사도 × 0.25
+  → faithfulness가 못 잡는 '컨텍스트엔 충실하나 정답과 다른' 답변 포착
+  + answer_relevance 판정 시 [모범답안]을 주입해 사람 채점과 정렬
+
+[③ 대화 맥락 주입] — answer_relevance / faithfulness
+  "그건 얼마예요?" + 직전 맥락("요금제 안내")  → 지시대명사 해석 후 채점
+  → 후속 턴 고립 평가로 인한 체계적 오채점 제거 (LLM 호출 0)
+
+[④ 적정 거절] — 거절 정규식 탐지 → 컨텍스트 근거 부재면 정당
+  정당 → faithfulness/answer_relevance 감점 면제(abstention=True)
+
+[⑤ 수치 가드] — 답변 수치 ∉ 컨텍스트 → 충돌 (결정적, LLM 0)
+  faithfulness -= 0.3 × 충돌수, numeric_flags 기록
+
+[⑦ 자동 보정] — 골든셋(judge→human)으로 보정맵 학습 → 점수 교정
+  judge 0.8 → (사람 척도) 0.6 으로 끌어당김, SLA 임계 F1 최대점 자동 탐색
 ```
 
 ---

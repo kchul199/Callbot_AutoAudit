@@ -135,6 +135,35 @@ evaluation:
     weight_forward: 0.6             # 순방향 가중치
     weight_reverse: 0.4             # 역방향 가중치
     inconsistency_threshold: 0.25   # |forward-reverse| > 이 값 → is_low_confidence
+  correctness:                      # ① 정답성 + ② 참조 기반 채점 (ground_truth 필요)
+    enabled: false                  # 정답이 있을 때만 --enable correctness
+    metric_name: "answer_correctness"
+    weight_f1: 0.75                 # 정답 대비 claim F1 가중
+    weight_similarity: 0.25         # 정답 대비 의미 유사도 가중
+    reference_guided: true          # answer_relevance에 정답 주입 (②)
+  context_injection:                # ③ 대화 맥락 주입 (멀티턴 후속 턴 오채점 제거)
+    enabled: false                  # --enable context_injection (비용 0)
+    max_history_turns: 6
+    metrics:
+      - "answer_relevance"
+      - "faithfulness"
+  abstention:                       # ④ 적정 거절/모름 판정 (정당한 거절 감점 면제)
+    enabled: false                  # --enable abstention
+    exempt_metrics:
+      - "answer_relevance"
+      - "faithfulness"
+    exempt_score: 1.0
+  numeric_guard:                    # ⑤ 결정적 수치·엔티티 가드 (수치 환각 포착, 비용 0)
+    enabled: false                  # --enable numeric_guard
+    apply_to: "faithfulness"
+    penalty_per_conflict: 0.3       # 충돌 1건당 감점
+    check_dates: true
+  auto_calibration:                 # ⑦ 휴먼 정합 자동 보정 루프 (골든셋 필요)
+    enabled: false                  # --enable auto_calibration
+    golden_set_path: "data/golden_set.jsonl"
+    method: "isotonic"             # isotonic | platt | linear | identity
+    auto_tune_sla: true            # SLA 임계 자동 탐색
+    min_samples: 10                # 메트릭별 최소 골든 샘플
 
 # --- CP5: 집계 ---
 cp5:
@@ -143,6 +172,7 @@ cp5:
     answer_relevance: 0.75
     context_precision: 0.7
     context_recall: 0.7
+    answer_correctness: 0.75   # ① 정답성 (correctness 활성 시)
   group_by: ["call_id", "subscriber_id", "date"]
 
 # --- CP6: 리포트 ---

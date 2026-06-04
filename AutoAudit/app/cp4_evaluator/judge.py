@@ -159,6 +159,48 @@ Step 4 — 최종 점수 산출:
 }}
 """
 
+_COT_ANSWER_RELEVANCE_REF_PROMPT = """
+당신은 RAG 시스템의 답변 적절성 평가 전문가입니다.
+[모범답안]을 기준선으로 삼아, 아래 단계 순서대로 분석한 뒤 점수를 산출하세요.
+단계를 건너뛰거나 점수를 먼저 결정하면 안 됩니다.
+
+[질문]
+{query}
+
+[모범답안]
+{ground_truth}
+
+[답변]
+{answer}
+
+━━ 분석 단계 (순서대로 수행) ━━
+
+Step 1 — 질문 의도 파악:
+  이 질문이 원하는 핵심 정보를 1~2문장으로 명확히 서술하세요.
+
+Step 2 — 답변 항목 나열:
+  답변이 실제로 다루는 내용을 항목별로 나열하세요 (최대 5개).
+
+Step 3 — 모범답안 대비 분석:
+  a) 모범답안이 다루는데 답변이 누락한 항목을 찾으세요.
+  b) 모범답안과 어긋나거나 질문과 무관한 내용을 지적하세요.
+
+Step 4 — 최종 점수 산출:
+  모범답안 대비 답변이 질문 의도를 얼마나 충족하는지 0.0~1.0으로 결정하세요.
+  (1.0=모범답안 수준, 0.5=부분 응답, 0.0=무관/빗나감)
+
+출력 형식 (JSON):
+{{
+  "step1_intent": "질문 핵심 의도",
+  "step2_items": ["답변 항목1", "답변 항목2"],
+  "step3_missing": ["누락 항목1"],
+  "step3_irrelevant": ["불필요/상이 항목1"],
+  "score": 0.0~1.0,
+  "reasoning": "모범답안 대비 최종 판정 근거 (한국어)",
+  "grounding_chunks": []
+}}
+"""
+
 _COT_CONTEXT_PRECISION_PROMPT = """
 당신은 RAG 검색 품질 평가 전문가입니다.
 반드시 아래 단계 순서대로 분석한 뒤 최종 점수를 산출하세요.
@@ -361,6 +403,9 @@ class LLMJudge:
         self._ensemble = None
         self._nugget_eval = None
         self._last_nuggets: list = []
+        # 답변 품질 정확도 강화 (① 정답성 / ④ 적정거절)
+        self._correctness_eval = None
+        self._abstention = None
 
     # ----------------------------------------------------------
     # 진입점
@@ -374,9 +419,12 @@ class LLMJudge:
             query=pair.question,
             generated_answer=pair.bot_answer,
             retrieval_result=pair.retrieval_result,
+            ground_truth=pair.ground_truth,
+            history=pair.history,
         )
         record.qa_id = pair.qa_id
         record.subscriber_id = pair.subscriber_id
+        record.ground_truth = pair.ground_truth
         return record
 
     async def evaluate(
@@ -385,13 +433,25 @@ class LLMJudge:
         query: str,
         generated_answer: str,
         retrieval_result: RetrievalResult,
+        ground_truth: str | None = None,
+        history: list[str] | None = None,
     ) -> EvaluationRecord:
         contexts_text = self._format_contexts(retrieval_result)
 
+        # ④ 적정 거절: 답변이 거절/모름이면 정당성을 1회만 판정해 메트릭에 공유
+        abstention_info = await self._assess_abstention(query, generated_answer, contexts_text)
+
         coros = [
-            self._evaluate_metric(metric, query, generated_answer, contexts_text, retrieval_result)
+            self._evaluate_metric(
+                metric, query, generated_answer, contexts_text, retrieval_result,
+                ground_truth=ground_truth, history=history, abstention=abstention_info,
+            )
             for metric in self.metrics
         ]
+        # ① 정답성: ground_truth가 있고 correctness 활성 시 추가 메트릭
+        if self.options.correctness.enabled and ground_truth:
+            coros.append(self._evaluate_correctness(generated_answer, ground_truth))
+
         scores = await gather_with_concurrency(coros, concurrency=self.concurrency)
 
         record = EvaluationRecord(
@@ -402,6 +462,7 @@ class LLMJudge:
             retrieval_result=retrieval_result,
             scores=scores,
             judge_model=self.judge_model,
+            ground_truth=ground_truth,
         )
 
         if self.options.nugget.enabled and self._last_nuggets:
@@ -437,8 +498,21 @@ class LLMJudge:
         answer: str,
         contexts_text: str,
         retrieval_result: RetrievalResult | None = None,
+        ground_truth: str | None = None,
+        history: list[str] | None = None,
+        abstention=None,
     ) -> MetricScore:
         opts = self.options
+
+        # ── ④ 적정 거절 면제: 정당한 거절이면 감점 면제 ──
+        if (
+            opts.abstention.enabled
+            and abstention is not None
+            and abstention.is_abstention
+            and abstention.appropriate
+            and metric in opts.abstention.exempt_metrics
+        ):
+            return self._exempt_score(metric, abstention.reasoning)
 
         # ── 특수 경로: nugget 기반 context_recall ──
         if metric == "context_recall" and opts.nugget.enabled and retrieval_result is not None:
@@ -456,6 +530,9 @@ class LLMJudge:
                 self._faith_eval = FaithfulnessEvaluator(self.provider)
             forward_score = await self._faith_eval.evaluate(answer, contexts_text)
 
+            # ⑤ 수치 가드: 결정적 수치 환각 포착 → 감점
+            forward_score = self._apply_numeric_guard(forward_score, answer, contexts_text)
+
             # 역방향 검증: faithfulness에 reverse 적용
             if opts.reverse.enabled and metric in opts.reverse.metrics:
                 return await self._apply_reverse(forward_score, metric, query, answer, contexts_text)
@@ -467,7 +544,10 @@ class LLMJudge:
             if self._ensemble is None:
                 from AutoAudit.app.cp4_evaluator.ensemble import EnsembleJudge
                 self._ensemble = EnsembleJudge(opts.ensemble)
-            prompt = self._build_prompt(metric, query, answer, contexts_text, use_cot=False)
+            prompt = self._build_prompt(
+                metric, query, answer, contexts_text, use_cot=False,
+                ground_truth=ground_truth, history=history,
+            )
             return await self._ensemble.score(metric, prompt, self._SYSTEM)
 
         # ── 편향 보정 경로 ──
@@ -475,13 +555,19 @@ class LLMJudge:
             if self._calibrator is None:
                 from AutoAudit.app.cp4_evaluator.calibration import JudgeCalibrator
                 self._calibrator = JudgeCalibrator(self.provider, opts.calibration)
-            prompt = self._build_prompt(metric, query, answer, contexts_text, use_cot=False)
+            prompt = self._build_prompt(
+                metric, query, answer, contexts_text, use_cot=False,
+                ground_truth=ground_truth, history=history,
+            )
             score = await self._calibrator.score(metric, prompt, self._SYSTEM)
             return await self._maybe_escalate(score, metric, query, answer, contexts_text)
 
         # ── 기본 경로: CoT 여부 판단 후 샘플링 ──
         use_cot = opts.cot.enabled and metric in opts.cot.metrics
-        prompt = self._build_prompt(metric, query, answer, contexts_text, use_cot=use_cot)
+        prompt = self._build_prompt(
+            metric, query, answer, contexts_text, use_cot=use_cot,
+            ground_truth=ground_truth, history=history,
+        )
 
         if self.n_samples <= 1:
             samples = [await self._single_call(prompt, metric, self.temperature, use_cot=use_cot)]
@@ -503,6 +589,56 @@ class LLMJudge:
         return await self._maybe_escalate(forward_score, metric, query, answer, contexts_text)
 
     # ----------------------------------------------------------
+    # ① 정답성 / ④ 적정 거절 / ⑤ 수치 가드 헬퍼
+    # ----------------------------------------------------------
+
+    async def _evaluate_correctness(self, answer: str, ground_truth: str) -> MetricScore:
+        """① ground_truth 대비 정답성(claim F1 + 의미 유사도) 메트릭."""
+        if self._correctness_eval is None:
+            from AutoAudit.app.cp4_evaluator.correctness import CorrectnessEvaluator
+            self._correctness_eval = CorrectnessEvaluator(self.provider, self.options.correctness)
+        return await self._correctness_eval.evaluate(answer, ground_truth)
+
+    async def _assess_abstention(self, query: str, answer: str, contexts_text: str):
+        """④ 답변이 거절/모름인지 + 정당한지 1회 판정 (메트릭 간 공유)."""
+        if not self.options.abstention.enabled:
+            return None
+        if self._abstention is None:
+            from AutoAudit.app.cp4_evaluator.abstention import AbstentionDetector
+            self._abstention = AbstentionDetector(self.provider)
+        return await self._abstention.assess(query, answer, contexts_text)
+
+    def _exempt_score(self, metric: str, reasoning: str) -> MetricScore:
+        """정당한 거절에 대한 감점 면제 점수."""
+        return MetricScore(
+            metric=metric,
+            score=self.options.abstention.exempt_score,
+            reasoning=f"[적정 거절 — 감점 면제] {reasoning}",
+            method="abstention_exempt",
+            abstention=True,
+        )
+
+    def _apply_numeric_guard(
+        self, score: MetricScore, answer: str, contexts_text: str
+    ) -> MetricScore:
+        """⑤ faithfulness에 결정적 수치 가드 적용."""
+        ng = self.options.numeric_guard
+        if not ng.enabled or score.metric != ng.apply_to:
+            return score
+        from AutoAudit.app.cp4_evaluator.numeric_guard import apply_guard
+        guarded, conflicts = apply_guard(
+            score.score, answer, contexts_text,
+            penalty_per_conflict=ng.penalty_per_conflict, check_dates=ng.check_dates,
+        )
+        if not conflicts:
+            return score
+        score.score = guarded
+        score.numeric_flags = conflicts
+        score.is_low_confidence = True
+        score.reasoning = f"[수치 가드 -{len(conflicts)}건: {', '.join(conflicts)}] {score.reasoning}"
+        return score
+
+    # ----------------------------------------------------------
     # CoT 프롬프트 선택
     # ----------------------------------------------------------
 
@@ -513,13 +649,51 @@ class LLMJudge:
         answer: str,
         contexts_text: str,
         use_cot: bool,
+        ground_truth: str | None = None,
+        history: list[str] | None = None,
     ) -> str:
-        """CoT 활성 여부에 따라 적절한 프롬프트 선택"""
-        if use_cot and metric in METRIC_COT_PROMPTS:
-            template = METRIC_COT_PROMPTS[metric]
+        """CoT/참조기반 여부에 따라 프롬프트 선택 + 대화 맥락 주입.
+
+        ② 참조 기반: answer_relevance에 ground_truth가 있으면 모범답안 대비 채점
+        ③ 대화 맥락: 지정 메트릭에 직전 N턴 이력을 프롬프트 앞에 주입
+        """
+        opts = self.options
+        # ② 참조 기반 채점 — answer_relevance + 정답 존재 시
+        if (
+            metric == "answer_relevance"
+            and opts.correctness.reference_guided
+            and ground_truth
+        ):
+            prompt = _COT_ANSWER_RELEVANCE_REF_PROMPT.format(
+                query=query, answer=answer, contexts=contexts_text, ground_truth=ground_truth,
+            )
+        elif use_cot and metric in METRIC_COT_PROMPTS:
+            prompt = METRIC_COT_PROMPTS[metric].format(
+                query=query, answer=answer, contexts=contexts_text,
+            )
         else:
-            template = METRIC_PROMPTS.get(metric, "")
-        return template.format(query=query, answer=answer, contexts=contexts_text)
+            prompt = METRIC_PROMPTS.get(metric, "").format(
+                query=query, answer=answer, contexts=contexts_text,
+            )
+
+        # ③ 대화 맥락 주입 — 지정 메트릭에 직전 턴 이력 prepend
+        if (
+            history
+            and opts.context_injection.enabled
+            and metric in opts.context_injection.metrics
+        ):
+            prompt = self._format_history_block(history) + prompt
+        return prompt
+
+    def _format_history_block(self, history: list[str]) -> str:
+        """직전 대화 맥락 블록 생성 (최근 max_history_turns개)."""
+        n = self.options.context_injection.max_history_turns
+        recent = history[-n:] if n > 0 else history
+        body = "\n".join(recent)
+        return (
+            "[직전 대화 맥락] (아래 평가 시 이 맥락을 참고해 지시대명사·생략을 해석하세요)\n"
+            f"{body}\n\n"
+        )
 
     # ----------------------------------------------------------
     # CoT 파싱 — 단계별 추론 추출

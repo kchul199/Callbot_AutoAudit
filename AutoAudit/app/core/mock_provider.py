@@ -85,6 +85,11 @@ class MockProvider:
             return self._reverse_faithfulness(prompt)
         if "역방향 검증" in prompt and "역추론" in prompt:  # reverse answer_relevance
             return self._reverse_answer_relevance(prompt)
+        # ── 답변 품질 정확도 강화 분기 ──
+        if "정답성(correctness)" in prompt:           # ① 정답성 TP/FP/FN 분류
+            return self._correctness_alignment(prompt)
+        if "이 거절이 정당한지" in prompt:             # ④ 적정 거절 정당성 판정
+            return self._abstention_appropriate(prompt)
         if json_mode:                                # 일반 메트릭 평가
             return self._metric_score(prompt)
         return "mock 응답"
@@ -93,11 +98,26 @@ class MockProvider:
 
     @staticmethod
     def _extract_section(prompt: str, header: str) -> str:
-        """[헤더] 다음 블록 텍스트 추출 (대략)."""
+        """[헤더] 다음 블록 텍스트 추출 (대략, 400자 윈도우)."""
         idx = prompt.find(header)
         if idx == -1:
             return ""
         return prompt[idx + len(header): idx + len(header) + 400]
+
+    @staticmethod
+    def _extract_block(prompt: str, header: str) -> str:
+        """줄 단독 [헤더] ~ 다음 섹션 헤더 전까지 정확히 추출.
+
+        지시문 안에 인용된 '[질문]' 같은 문구가 아니라, 줄 시작에 단독으로 온
+        실제 섹션 헤더만 앵커로 잡아 섹션 간 누수를 막는다.
+        """
+        m = re.search(r"(?:^|\n)" + re.escape(header) + r"[ \t]*\n", prompt)
+        start = m.end() if m else (prompt.find(header) + len(header) if header in prompt else -1)
+        if start < 0:
+            return ""
+        rest = prompt[start:]
+        end = re.search(r"\n\s*(?:\[[^\]]+\]|━|Step\s|출력\s*형식|판정\s*기준)", rest)
+        return rest[: end.start()] if end else rest[:400]
 
     def _metric_score(self, prompt: str) -> str:
         """질문/답변/컨텍스트 토큰 중첩으로 0~1 점수 근사."""
@@ -250,6 +270,40 @@ class MockProvider:
             "score": score,
             "reasoning": "mock 역방향 answer_relevance 평가",
             "grounding_chunks": [],
+        })
+
+    # ── 답변 품질 정확도 강화 응답 생성기 ──
+
+    def _correctness_alignment(self, prompt: str) -> str:
+        """① 정답성: [정답] vs [답변] 진술을 TP/FP/FN으로 결정적 분류."""
+        ground_truth = self._extract_block(prompt, "[정답]")
+        answer = self._extract_block(prompt, "[답변]")
+        gt_sents = [s.strip() for s in re.split(r"[.!?。\n]", ground_truth) if len(s.strip()) > 3][:6]
+        ans_sents = [s.strip() for s in re.split(r"[.!?。\n]", answer) if len(s.strip()) > 3][:6]
+
+        def overlaps(s: str, pool: list[str]) -> bool:
+            st = _tokens(s)
+            return any((len(st & _tokens(p)) / max(1, len(st))) >= 0.4 for p in pool)
+
+        tp = [s for s in ans_sents if overlaps(s, gt_sents)]
+        fp = [s for s in ans_sents if not overlaps(s, gt_sents)]
+        fn = [s for s in gt_sents if not overlaps(s, ans_sents)]
+        return json.dumps({
+            "tp": tp, "fp": fp, "fn": fn,
+            "reasoning": f"mock 정답성 분류 (TP {len(tp)}, FP {len(fp)}, FN {len(fn)})",
+        })
+
+    def _abstention_appropriate(self, prompt: str) -> str:
+        """④ 적정 거절: 컨텍스트에 질문 정보가 없으면 거절을 정당으로 판정."""
+        query = self._extract_block(prompt, "[질문]")
+        contexts = self._extract_block(prompt, "[컨텍스트]")
+        q_tok, c_tok = _tokens(query), _tokens(contexts)
+        overlap = (len(q_tok & c_tok) / len(q_tok)) if q_tok else 0.0
+        # 컨텍스트가 질문 정보를 거의 안 담으면(overlap 낮음) 거절은 정당
+        appropriate = overlap < 0.3
+        return json.dumps({
+            "appropriate": appropriate,
+            "reasoning": f"mock 거절 정당성 (컨텍스트-질문 중첩={overlap:.2f})",
         })
 
 
