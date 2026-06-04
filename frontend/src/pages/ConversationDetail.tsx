@@ -73,14 +73,21 @@ export default function ConversationDetail() {
       {sessionEval?.scores && (
         <div className="card card-pad" style={{ marginBottom: 16 }}>
           <h3>세션 평가</h3>
-          <div className="card-sub">대화 전체 품질 (멀티턴)</div>
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <div className="card-sub">대화 전체 품질 (멀티턴) · 메트릭별 평가의견</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 12 }}>
             {sessionEval.scores.map((s) => (
-              <div key={s.metric}>
-                <div className="faint" style={{ fontSize: 11.5 }}>{labelKo(s.metric)}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: `var(--${scoreTone(s.score)})` }}>
-                  {s.score.toFixed(2)}
+              <div key={s.metric} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <div className="faint" style={{ fontSize: 11.5 }}>{labelKo(s.metric)}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: `var(--${scoreTone(s.score)})` }}>
+                    {s.score.toFixed(2)}
+                  </div>
                 </div>
+                {s.reasoning && (
+                  <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 5, lineHeight: 1.45 }}>
+                    💬 {s.reasoning}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -145,6 +152,17 @@ export default function ConversationDetail() {
         return (
           <div className="card card-pad" key={te.turn_index} style={{ marginTop: 16 }}>
             <h3>🔎 평가 근거 (턴 {te.turn_index})</h3>
+            {/* 메트릭별 평가의견 — 왜 그렇게 평가했는지 */}
+            <div style={{ marginBottom: 14 }}>
+              <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>💬 메트릭별 평가의견</div>
+              {te.scores.map((s) => (
+                <div key={s.metric} style={{ display: "flex", gap: 9, alignItems: "baseline", padding: "7px 0", borderBottom: "1px solid var(--border)", fontSize: 12.5 }}>
+                  <span style={{ minWidth: 66, fontWeight: 600 }}>{labelKo(s.metric)}</span>
+                  <span style={{ flexShrink: 0 }}><ScoreBadge score={s.final_score ?? s.score} /></span>
+                  <span style={{ color: "var(--text-muted)", lineHeight: 1.45 }}>{s.reasoning || "—"}</span>
+                </div>
+              ))}
+            </div>
             {faith?.claims && faith.claims.length > 0 && (
               <div style={{ marginBottom: 12 }}>
                 <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>Claim 분해 (Faithfulness)</div>

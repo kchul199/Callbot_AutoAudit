@@ -360,6 +360,49 @@ def _retrieval(question: str, contexts: list[str], call_id: str) -> RetrievalRes
                            sub_queries=[f"{question} 재작성{i}" for i in range(2)], contexts=ctxs)
 
 
+def _reason(metric: str, sc: dict, score: float) -> str:
+    """메트릭별 '왜 그렇게 평가했는지' 설명형 근거 — 시나리오 유형·점수 반영."""
+    kind = sc["kind"]
+    hi = score >= 0.85
+    if metric == "faithfulness":
+        if sc.get("numeric"):
+            return (f"답변의 수치 '{', '.join(sc['numeric'])}'가 검색 컨텍스트의 수치와 "
+                    f"달라 수치 환각으로 판정했습니다. 나머지 진술은 컨텍스트로 지지됩니다.")
+        if sc.get("refusal"):
+            return "정보 부재로 거절한 답변이라 외부 지식 주장이 없어, 환각 위험이 없습니다(충실성 높음)."
+        if kind == "generation_hallucination":
+            return "답변 일부 주장이 검색 컨텍스트에 근거가 없는 외부 지식 추정이라 충실성을 낮게 평가했습니다."
+        if kind == "both":
+            return "검색 컨텍스트도 부정확한데 답변이 단정적 주장을 더해 컨텍스트로 지지되는 claim 비율이 매우 낮습니다."
+        return ("답변의 모든 핵심 주장이 검색 컨텍스트로 지지되어 환각이 없습니다."
+                if hi else "답변 주장 중 일부만 컨텍스트로 지지되고 나머지는 근거가 약합니다.")
+    if metric == "answer_relevance":
+        if sc.get("refusal"):
+            return "질문에 직접 답하진 못했으나 정보가 없는 상황에서 적절히 거절·안내한 응답입니다(적정 거절로 감점 면제)."
+        if kind == "incomplete":
+            return "질문이 요구한 항목 중 일부만 답변해 관련성이 부분적입니다(누락 항목 존재)."
+        return ("질문의 핵심 의도를 정확히 짚어 직접적으로 응답했습니다."
+                if hi else "질문 의도를 일부만 충족하거나 불필요한 내용이 섞여 관련성이 다소 떨어집니다.")
+    if metric == "context_precision":
+        if kind in ("retrieval_failure", "both"):
+            return "검색된 청크 상당수가 질문과 무관한 내용이라 정밀도가 낮습니다(노이즈 청크 다수)."
+        return ("검색된 청크 대부분이 질문에 직접 유용해 정밀도가 높습니다."
+                if hi else "유용한 청크와 무관한 청크가 섞여 있어 정밀도가 중간 수준입니다.")
+    if metric == "context_recall":
+        if kind in ("retrieval_failure", "both") or score < 0.6:
+            return "답변에 필요한 핵심 정보 일부가 검색 컨텍스트에서 누락되어 재현율이 낮습니다."
+        if kind == "incomplete":
+            return "질문이 요구한 정보 중 일부만 컨텍스트에 포함되어 있습니다."
+        return ("답변에 필요한 핵심 정보가 컨텍스트에 충분히 포함되어 있습니다."
+                if hi else "필요 정보가 대체로 포함되나 일부 세부 정보가 빠져 있습니다.")
+    if metric == "answer_correctness":
+        if sc.get("numeric"):
+            return "정답 대비 수치가 달라 정답성이 낮습니다(claim F1 하락)."
+        return ("정답과 의미·사실이 일치합니다(claim F1·의미 유사도 모두 높음)."
+                if hi else "정답 대비 누락하거나 다른 주장이 있어 정답성이 부분적입니다.")
+    return f"{metric} 단계별 평가"
+
+
 def _turn_scores(sc: dict, drift: float, rr: RetrievalResult) -> list[MetricScore]:
     """턴 레벨 메트릭 점수 — 시나리오 기준 + 배치 드리프트 + 노이즈."""
     chunk_ids = [c.chunk_id for c in rr.contexts]
@@ -382,7 +425,8 @@ def _turn_scores(sc: dict, drift: float, rr: RetrievalResult) -> list[MetricScor
                 for i in range(n_claims)
             ]
             scores.append(MetricScore(
-                metric=metric, score=val, reasoning=f"claim {n_claims}개 중 {supported}개 지지",
+                metric=metric, score=val,
+                reasoning=f"{_reason(metric, sc, val)} (claim {n_claims}개 중 {supported}개 지지)",
                 confidence=_clamp(0.95 - (0.5 - abs(val - 0.5))),
                 is_low_confidence=low, method="claim_nli", claims=claims,
                 grounding_chunks=chunk_ids[:2],
@@ -391,7 +435,7 @@ def _turn_scores(sc: dict, drift: float, rr: RetrievalResult) -> list[MetricScor
         else:
             method = "cot" if metric in ("answer_relevance", "context_precision", "context_recall") else "single"
             scores.append(MetricScore(
-                metric=metric, score=val, reasoning=f"{metric} 단계별 평가",
+                metric=metric, score=val, reasoning=_reason(metric, sc, val),
                 confidence=_clamp(random.uniform(0.45, 0.97)),
                 is_low_confidence=low, method=method,
                 grounding_chunks=chunk_ids[:1] if metric.startswith("context") else [],
@@ -405,7 +449,8 @@ def _turn_scores(sc: dict, drift: float, rr: RetrievalResult) -> list[MetricScor
         f1 = _clamp(cval + random.uniform(-0.05, 0.05))
         scores.append(MetricScore(
             metric="answer_correctness", score=cval,
-            reasoning=f"정답성 F1={f1:.2f} + 의미유사도", confidence=0.9,
+            reasoning=f"{_reason('answer_correctness', sc, cval)} (F1={f1:.2f}, 의미유사도 반영)",
+            confidence=0.9,
             is_low_confidence=cval < 0.6, method="answer_correctness",
             correctness_f1=f1, correctness_sim=_clamp(cval + 0.05),
         ))
@@ -435,16 +480,27 @@ def _turn_scores(sc: dict, drift: float, rr: RetrievalResult) -> list[MetricScor
 def _session_scores(sc: dict, drift: float) -> list[MetricScore]:
     resolved = sc["kind"] == "healthy"
     escalation = sc.get("escalation", False)
+    consistent = sc["diag"] != "generation_hallucination"
     return [
-        MetricScore(metric="resolution", score=_jitter(0.9 if resolved else 0.4, drift),
-                    reasoning="고객 목표 달성 여부", method="session"),
-        MetricScore(metric="multiturn_consistency",
-                    score=_jitter(0.55 if sc["diag"] == "generation_hallucination" else 0.93, drift),
-                    reasoning="턴 간 진술 일관성", method="session"),
-        MetricScore(metric="efficiency", score=_jitter(0.85, drift, 0.08),
-                    reasoning="불필요한 반복 없이 해결", method="session"),
-        MetricScore(metric="escalation_handling", score=0.0 if escalation else 1.0,
-                    reasoning="상담원 연결 필요" if escalation else "콜봇 내 해결", method="session"),
+        MetricScore(
+            metric="resolution", score=_jitter(0.9 if resolved else 0.4, drift),
+            reasoning=("고객 문의가 대화 내에서 최종적으로 해결되었습니다." if resolved
+                       else "고객 목표가 완전히 해결되지 못한 채 대화가 종료되었습니다."),
+            method="session"),
+        MetricScore(
+            metric="multiturn_consistency",
+            score=_jitter(0.93 if consistent else 0.55, drift),
+            reasoning=("여러 턴의 봇 답변 사이에 모순되는 진술이 없습니다." if consistent
+                       else "앞뒤 턴의 안내가 서로 어긋나 일관성이 떨어집니다."),
+            method="session"),
+        MetricScore(
+            metric="efficiency", score=_jitter(0.85, drift, 0.08),
+            reasoning="불필요한 되묻기·반복 없이 비교적 간결하게 응대했습니다.", method="session"),
+        MetricScore(
+            metric="escalation_handling", score=0.0 if escalation else 1.0,
+            reasoning=("상담원 연결이 필요한 상황이었습니다(콜봇 단독 해결 실패)." if escalation
+                       else "상담원 연결 없이 콜봇 내에서 처리되었습니다."),
+            method="session"),
     ]
 
 

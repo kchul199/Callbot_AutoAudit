@@ -135,16 +135,24 @@ function EvidenceDrawer({ record, tenant, navigate, onClose }: {
           </div>
 
           <div className="card card-pad" style={{ marginBottom: 14 }}>
-            <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>📊 메트릭</div>
-            {(record.scores ?? []).map((s) => (
-              <div key={s.metric} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13 }}>
-                <span>{labelKo(s.metric)}</span>
-                <span style={{ display: "flex", gap: 6 }}>
-                  <ScoreBadge score={s.score} />
-                  {s.human_score != null && s.human_score !== s.score && (
-                    <span className="badge info">사람 {s.human_score.toFixed(2)}</span>
-                  )}
-                </span>
+            <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>📊 메트릭 · 평가의견</div>
+            {(record.scores ?? []).map((s, idx, arr) => (
+              <div key={s.metric} style={{ padding: "9px 0", borderBottom: idx < arr.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
+                  <span style={{ fontWeight: 600 }}>{labelKo(s.metric)}</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <ScoreBadge score={s.score} />
+                    {s.is_low_confidence && <span className="badge lowconf">⚠ 낮은 신뢰도</span>}
+                    {s.human_score != null && s.human_score !== s.score && (
+                      <span className="badge info">사람 {s.human_score.toFixed(2)}</span>
+                    )}
+                  </span>
+                </div>
+                {s.reasoning && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 5, lineHeight: 1.5 }}>
+                    💬 {s.reasoning}
+                  </div>
+                )}
               </div>
             ))}
           </div>
