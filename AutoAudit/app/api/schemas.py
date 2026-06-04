@@ -245,6 +245,28 @@ class KbStatus(BaseModel):
     coverage_gaps: list[KbGap] = Field(default_factory=list)
 
 
+class CredentialInfo(BaseModel):
+    """provider 자격증명 등록 상태 (평문 키는 절대 반환하지 않음 — 마스킹만)."""
+    provider: str
+    registered: bool = False
+    source: str = "none"            # env | manual | mock | none
+    masked_key: str = ""            # 예: ••••••••abcd (마지막 4자리만)
+    base_url: str = ""              # openai/anthropic 호환 게이트웨이 (선택)
+    endpoint: str = ""              # azure 엔드포인트
+    api_version: str = ""           # azure API 버전
+    deployment: str = ""            # azure 배포명
+    updated_at: str | None = None
+
+
+class CredentialSubmit(BaseModel):
+    """provider 자격증명 등록 (PUT 본문) — 평문 키는 저장 시 마스킹 처리."""
+    api_key: str = ""
+    base_url: str = ""
+    endpoint: str = ""
+    api_version: str = ""
+    deployment: str = ""
+
+
 class TenantSettings(BaseModel):
     """tenant 설정 — SLA 임계값·옵션 프로필·Judge·알림"""
     tenant_id: str
@@ -252,6 +274,7 @@ class TenantSettings(BaseModel):
     eval_profile: str = "기본"                # 빠른 점검 | 고신뢰 | 검색 진단 | 안전성 감사
     default_judge: str = "anthropic"
     judge_credentials: dict[str, bool] = Field(default_factory=dict)  # provider → 등록 여부
+    credential_details: dict[str, CredentialInfo] = Field(default_factory=dict)  # provider → 상세
     slack_webhook: str = ""
     notify_on_regression: bool = True
     reviewers: list[str] = Field(default_factory=list)

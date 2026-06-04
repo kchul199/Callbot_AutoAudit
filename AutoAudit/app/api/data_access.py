@@ -26,6 +26,8 @@ class DataAccess:
         self.repo = repo if repo is not None else ResultsRepository()
         # tenant 설정 (M6) — 인메모리 (운영 시 DB/파일로 영속)
         self._settings: dict[str, dict[str, Any]] = {}
+        # provider 자격증명 (tenant → provider → 메타). 평문 키는 저장하지 않고 마스킹만 보관.
+        self._credentials: dict[str, dict[str, dict[str, Any]]] = {}
 
     def list_runs(self) -> list[dict[str, Any]]:
         db_runs = self.store.list_runs()
@@ -95,14 +97,17 @@ class DataAccess:
     def kb_status(self, tenant_id: str) -> dict[str, Any]:
         return self.store.kb_status(tenant_id)
 
-    def get_settings(self, tenant_id: str) -> dict[str, Any]:
-        import os
+    # provider → 자격증명 환경변수 매핑
+    _CRED_ENV = {
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "azure": ("AZURE_OPENAI_API_KEY",),
+    }
 
+    def _default_settings(self, tenant_id: str) -> dict[str, Any]:
         from AutoAudit.app.core.config import get as cfg_get
-        if tenant_id in self._settings:
-            return self._settings[tenant_id]
-        mock = os.environ.get("AUTOAUDIT_MOCK") == "1"
-        defaults = {
+        return {
             "tenant_id": tenant_id,
             "sla_thresholds": cfg_get("cp5.sla_thresholds", default={
                 "faithfulness": 0.8, "answer_relevance": 0.75,
@@ -110,22 +115,90 @@ class DataAccess:
             }),
             "eval_profile": "기본",
             "default_judge": "anthropic",
-            "judge_credentials": {
-                "anthropic": mock or bool(os.environ.get("ANTHROPIC_API_KEY")),
-                "openai": mock or bool(os.environ.get("OPENAI_API_KEY")),
-                "gemini": mock or bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-                "azure": mock or bool(os.environ.get("AZURE_OPENAI_API_KEY")),
-            },
             "slack_webhook": "",
             "notify_on_regression": True,
             "reviewers": ["qa_kim", "qa_lee"],
         }
-        return defaults
+
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        """평문 키를 마스킹 — 마지막 4자리만 노출."""
+        key = (key or "").strip()
+        if not key:
+            return ""
+        tail = key[-4:] if len(key) > 4 else key
+        return "••••••••" + tail
+
+    def _compute_credentials(self, tenant_id: str) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
+        """env + 수동 등록을 병합해 provider별 (등록여부, 상세) 산출."""
+        import os
+        manual = self._credentials.get(tenant_id, {})
+        bool_out: dict[str, bool] = {}
+        detail_out: dict[str, dict[str, Any]] = {}
+        for prov, env_keys in self._CRED_ENV.items():
+            m = manual.get(prov)
+            env_present = any(os.environ.get(k) for k in env_keys)
+            if m:  # 수동 등록 우선
+                detail = {
+                    "provider": prov, "registered": True, "source": "manual",
+                    "masked_key": m.get("masked_key", ""), "base_url": m.get("base_url", ""),
+                    "endpoint": m.get("endpoint", ""), "api_version": m.get("api_version", ""),
+                    "deployment": m.get("deployment", ""), "updated_at": m.get("updated_at"),
+                }
+            elif env_present:
+                detail = {
+                    "provider": prov, "registered": True, "source": "env",
+                    "masked_key": "환경변수", "base_url": "", "endpoint": "",
+                    "api_version": "", "deployment": "", "updated_at": None,
+                }
+            else:
+                detail = {
+                    "provider": prov, "registered": False, "source": "none",
+                    "masked_key": "", "base_url": "", "endpoint": "",
+                    "api_version": "", "deployment": "", "updated_at": None,
+                }
+            bool_out[prov] = detail["registered"]
+            detail_out[prov] = detail
+        return bool_out, detail_out
+
+    def get_settings(self, tenant_id: str) -> dict[str, Any]:
+        base = self._settings.get(tenant_id) or self._default_settings(tenant_id)
+        creds, details = self._compute_credentials(tenant_id)
+        return {
+            **base, "tenant_id": tenant_id,
+            "judge_credentials": creds, "credential_details": details,
+        }
 
     def save_settings(self, tenant_id: str, settings: dict[str, Any]) -> dict[str, Any]:
-        merged = {**self.get_settings(tenant_id), **settings, "tenant_id": tenant_id}
-        self._settings[tenant_id] = merged
-        return merged
+        # 자격증명은 별도 엔드포인트로만 갱신 — 설정 저장 시 마스킹 값이 덮어쓰지 않도록 제외
+        clean = {k: v for k, v in settings.items()
+                 if k not in ("judge_credentials", "credential_details", "tenant_id")}
+        base = self._settings.get(tenant_id) or self._default_settings(tenant_id)
+        self._settings[tenant_id] = {**base, **clean, "tenant_id": tenant_id}
+        return self.get_settings(tenant_id)
+
+    def save_credential(self, tenant_id: str, provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미저장)."""
+        from datetime import UTC, datetime
+        if provider not in self._CRED_ENV:
+            raise ValueError(f"알 수 없는 provider: {provider}")
+        api_key = (payload.get("api_key") or "").strip()
+        if not api_key:
+            raise ValueError("api_key가 필요합니다.")
+        self._credentials.setdefault(tenant_id, {})[provider] = {
+            "masked_key": self._mask_key(api_key),
+            "base_url": (payload.get("base_url") or "").strip(),
+            "endpoint": (payload.get("endpoint") or "").strip(),
+            "api_version": (payload.get("api_version") or "").strip(),
+            "deployment": (payload.get("deployment") or "").strip(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        return self.get_settings(tenant_id)
+
+    def delete_credential(self, tenant_id: str, provider: str) -> dict[str, Any]:
+        """수동 등록 자격증명 삭제 (env 기반은 영향 없음)."""
+        self._credentials.get(tenant_id, {}).pop(provider, None)
+        return self.get_settings(tenant_id)
 
     def get_summary(self, run_id: str) -> dict[str, Any] | None:
         return self.store.get_summary(run_id) or self.repo.get_summary(run_id)

@@ -128,3 +128,50 @@ def test_api_endpoints(results_tree, tmp_path):
     assert detail["qa_id"] == "q1"
 
     assert client.get("/api/runs/run_abc/evaluations/missing").status_code == 404
+
+
+def test_credential_endpoints(tmp_path, monkeypatch):
+    """Judge 자격증명 등록/조회/삭제 + 마스킹(평문 미유출) 검증."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    # provider 환경변수 격리 → 결정적 (env 키가 있으면 source=env 가 됨)
+    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+              "GOOGLE_API_KEY", "AZURE_OPENAI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    isolated = ResultStore(db_path=str(tmp_path / "empty.db"))
+    server.data = DataAccess(store=isolated, repo=ResultsRepository(str(tmp_path)))
+    client = TestClient(server.app)
+
+    # 초기: 전부 미등록 + credential_details 존재
+    s = client.get("/api/t/acme/settings").json()
+    assert s["judge_credentials"]["anthropic"] is False
+    assert s["credential_details"]["anthropic"]["registered"] is False
+
+    # 등록 → 수동 source + 마스킹 키, 평문 미유출
+    r = client.put("/api/t/acme/credentials/anthropic", json={"api_key": "sk-ant-SECRET-1234"})
+    assert r.status_code == 200
+    d = r.json()["credential_details"]["anthropic"]
+    assert d["registered"] is True and d["source"] == "manual"
+    assert d["masked_key"].endswith("1234")
+    assert "SECRET" not in r.text and "sk-ant-SECRET-1234" not in r.text
+
+    # azure: 추가 필드(endpoint/version/deployment) 영속
+    r = client.put("/api/t/acme/credentials/azure", json={
+        "api_key": "azkey-9999", "endpoint": "https://x.openai.azure.com",
+        "api_version": "2024-06-01", "deployment": "gpt-4o",
+    })
+    az = r.json()["credential_details"]["azure"]
+    assert az["endpoint"] == "https://x.openai.azure.com"
+    assert az["deployment"] == "gpt-4o" and az["api_version"] == "2024-06-01"
+
+    # 빈 키 거부
+    assert client.put("/api/t/acme/credentials/anthropic", json={"api_key": ""}).status_code == 400
+
+    # 삭제 → 미등록 복귀
+    r = client.delete("/api/t/acme/credentials/anthropic")
+    assert r.json()["credential_details"]["anthropic"]["registered"] is False

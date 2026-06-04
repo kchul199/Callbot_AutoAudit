@@ -185,3 +185,51 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
 }
 .kbd { font-family: var(--mono); font-size: 10.5px; background: var(--surface-2);
   border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 5px; color: var(--text-muted); }
+
+/* ---- 자격증명 칩 (클릭해서 등록) ---- */
+.cred-chip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); cursor: pointer; transition: border-color .12s, background .12s;
+}
+.cred-chip:hover { background: var(--surface-2); border-color: var(--accent); }
+.cred-chip:focus-visible { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.cred-chip-cog { color: var(--text-faint); font-size: 12px; margin-left: 2px; }
+
+/* ---- 모달 ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 100; padding: 24px;
+  background: rgba(16, 24, 40, .48);
+  display: flex; align-items: center; justify-content: center;
+  animation: backdropIn .12s ease;
+}
+@keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+  animation: modalIn .15s ease;
+}
+@keyframes modalIn { from { transform: translateY(10px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { margin: 0; font-size: 16px; }
+.modal-close { cursor: pointer; color: var(--text-faint); font-size: 16px; line-height: 1;
+  padding: 4px 6px; border-radius: 6px; }
+.modal-close:hover { background: var(--surface-2); color: var(--text); }
+.modal-body { padding: 18px 20px; }
+.modal-foot {
+  display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+  padding: 14px 20px; border-top: 1px solid var(--border);
+}
+.cred-status { display: flex; align-items: center; gap: 8px; }
+.cred-note {
+  margin-top: 12px; padding: 9px 12px; border-radius: var(--radius-sm);
+  background: var(--info-soft); color: var(--info); font-size: 12.5px;
+}
+.cred-err {
+  margin-top: 12px; padding: 9px 12px; border-radius: var(--radius-sm);
+  background: var(--bad-soft); color: var(--bad); font-size: 12.5px;
+}

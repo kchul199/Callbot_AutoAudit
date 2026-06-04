@@ -28,6 +28,7 @@ from AutoAudit.app.api.schemas import (
     AuditSummaryResponse,
     ConversationDetail,
     ConversationInfo,
+    CredentialSubmit,
     EvaluationResponse,
     HealthResponse,
     JudgeModel,
@@ -180,6 +181,21 @@ def get_settings(tenant: str) -> dict:
 def put_settings(tenant: str, settings: TenantSettings) -> dict:
     """tenant 설정 저장."""
     return data.save_settings(tenant, settings.model_dump(exclude={"tenant_id"}))
+
+
+@app.put("/api/t/{tenant}/credentials/{provider}", response_model=TenantSettings)
+def put_credential(tenant: str, provider: str, body: CredentialSubmit) -> dict:
+    """provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미반환)."""
+    try:
+        return data.save_credential(tenant, provider, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/t/{tenant}/credentials/{provider}", response_model=TenantSettings)
+def delete_credential(tenant: str, provider: str) -> dict:
+    """수동 등록 자격증명 삭제."""
+    return data.delete_credential(tenant, provider)
 
 
 @app.get("/api/t/{tenant}/review-queue", response_model=list[EvaluationResponse])

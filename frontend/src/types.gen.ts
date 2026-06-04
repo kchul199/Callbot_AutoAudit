@@ -226,6 +226,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/t/{tenant}/credentials/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Credential
+         * @description provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미반환).
+         */
+        put: operations["put_credential_api_t__tenant__credentials__provider__put"];
+        post?: never;
+        /**
+         * Delete Credential
+         * @description 수동 등록 자격증명 삭제.
+         */
+        delete: operations["delete_credential_api_t__tenant__credentials__provider__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/t/{tenant}/review-queue": {
         parameters: {
             query?: never;
@@ -573,6 +597,82 @@ export interface components {
             role: string;
             /** Content */
             content: string;
+        };
+        /**
+         * CredentialInfo
+         * @description provider 자격증명 등록 상태 (평문 키는 절대 반환하지 않음 — 마스킹만).
+         */
+        CredentialInfo: {
+            /** Provider */
+            provider: string;
+            /**
+             * Registered
+             * @default false
+             */
+            registered: boolean;
+            /**
+             * Source
+             * @default none
+             */
+            source: string;
+            /**
+             * Masked Key
+             * @default
+             */
+            masked_key: string;
+            /**
+             * Base Url
+             * @default
+             */
+            base_url: string;
+            /**
+             * Endpoint
+             * @default
+             */
+            endpoint: string;
+            /**
+             * Api Version
+             * @default
+             */
+            api_version: string;
+            /**
+             * Deployment
+             * @default
+             */
+            deployment: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * CredentialSubmit
+         * @description provider 자격증명 등록 (PUT 본문) — 평문 키는 저장 시 마스킹 처리.
+         */
+        CredentialSubmit: {
+            /**
+             * Api Key
+             * @default
+             */
+            api_key: string;
+            /**
+             * Base Url
+             * @default
+             */
+            base_url: string;
+            /**
+             * Endpoint
+             * @default
+             */
+            endpoint: string;
+            /**
+             * Api Version
+             * @default
+             */
+            api_version: string;
+            /**
+             * Deployment
+             * @default
+             */
+            deployment: string;
         };
         /** EvaluationResponse */
         EvaluationResponse: {
@@ -947,6 +1047,10 @@ export interface components {
             /** Judge Credentials */
             judge_credentials?: {
                 [key: string]: boolean;
+            };
+            /** Credential Details */
+            credential_details?: {
+                [key: string]: components["schemas"]["CredentialInfo"];
             };
             /**
              * Slack Webhook
@@ -1343,6 +1447,74 @@ export interface operations {
                 "application/json": components["schemas"]["TenantSettings"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_credential_api_t__tenant__credentials__provider__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credential_api_t__tenant__credentials__provider__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

@@ -7,6 +7,7 @@ import type {
   AuditSummary,
   ConversationDetail,
   ConversationInfo,
+  CredentialSubmit,
   EvaluationRecord,
   JudgeModel,
   KbStatus,
@@ -36,6 +37,12 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return (await res.json()) as T;
+}
+
+async function delJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`/api${path}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return (await res.json()) as T;
 }
@@ -82,6 +89,10 @@ export const api = {
   settings: (tenantId: string) => getJSON<TenantSettings>(`/t/${tenantId}/settings`),
   saveSettings: (tenantId: string, s: TenantSettings) =>
     putJSON<TenantSettings>(`/t/${tenantId}/settings`, s),
+  saveCredential: (tenantId: string, provider: string, body: CredentialSubmit) =>
+    putJSON<TenantSettings>(`/t/${tenantId}/credentials/${provider}`, body),
+  deleteCredential: (tenantId: string, provider: string) =>
+    delJSON<TenantSettings>(`/t/${tenantId}/credentials/${provider}`),
   runs: () => getJSON<RunInfo[]>("/runs"),
   summary: (runId: string) => getJSON<AuditSummary>(`/runs/${runId}/summary`),
   trends: (runId: string) => getJSON<TrendData>(`/runs/${runId}/trends`),
