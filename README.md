@@ -50,8 +50,9 @@ pip install -r requirements-dev.txt          # 경량 의존성만
 # 백엔드 (mock)
 AUTOAUDIT_MOCK=1 uvicorn AutoAudit.app.api.server:app --port 8000 --reload
 
-# 데모 데이터 시드 (최초 1회)
-python scripts/seed_sessions.py --reset
+# 데모 데이터 시드 (최초 1회) — 포탈 전 화면 검증용 종합 데이터(8주 배치·전 메트릭·검수 4종)
+python scripts/seed_mock_data.py --reset
+# (간단 시드: python scripts/seed_sessions.py --reset)
 
 # 프론트엔드
 cd frontend && npm install && npm run dev    # http://localhost:5173
