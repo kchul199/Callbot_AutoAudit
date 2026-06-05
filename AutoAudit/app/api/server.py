@@ -32,6 +32,7 @@ from AutoAudit.app.api.schemas import (
     EvaluationResponse,
     HealthResponse,
     JudgeModel,
+    KbDocumentSubmit,
     KbStatus,
     ReviewResult,
     ReviewSubmit,
@@ -167,8 +168,23 @@ def tenant_agreement_samples(tenant: str, metric: str) -> list:
 
 @app.get("/api/t/{tenant}/kb", response_model=KbStatus)
 def tenant_kb(tenant: str) -> dict:
-    """tenant 지식베이스 현황 + 검색 커버리지 갭."""
+    """tenant 지식베이스 현황 + 검색 커버리지 갭 + 구축 문서."""
     return data.kb_status(tenant)
+
+
+@app.post("/api/t/{tenant}/kb/documents", response_model=KbStatus)
+def add_kb_document(tenant: str, body: KbDocumentSubmit) -> dict:
+    """고객사 지식 문서 추가 (제목+내용 → 청킹 후 저장)."""
+    try:
+        return data.kb_add_document(tenant, body.title, body.content, body.source_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/t/{tenant}/kb/documents/{doc_id}", response_model=KbStatus)
+def delete_kb_document(tenant: str, doc_id: str) -> dict:
+    """구축 KB 문서 삭제."""
+    return data.kb_delete_document(tenant, doc_id)
 
 
 @app.get("/api/t/{tenant}/settings", response_model=TenantSettings)

@@ -97,6 +97,18 @@ class DataAccess:
     def kb_status(self, tenant_id: str) -> dict[str, Any]:
         return self.store.kb_status(tenant_id)
 
+    def kb_add_document(
+        self, tenant_id: str, title: str, content: str, source_type: str = "수동",
+    ) -> dict[str, Any]:
+        """고객사 지식 문서 추가 후 갱신된 KB 현황 반환."""
+        self.store.add_kb_document(tenant_id, title, content, source_type)
+        return self.store.kb_status(tenant_id)
+
+    def kb_delete_document(self, tenant_id: str, doc_id: str) -> dict[str, Any]:
+        """구축 KB 문서 삭제 후 갱신된 KB 현황 반환."""
+        self.store.delete_kb_document(doc_id)
+        return self.store.kb_status(tenant_id)
+
     # provider → 자격증명 환경변수 매핑
     _CRED_ENV = {
         "anthropic": ("ANTHROPIC_API_KEY",),

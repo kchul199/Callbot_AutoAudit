@@ -234,6 +234,25 @@ class KbGap(BaseModel):
     context_recall: float = 0.0
 
 
+class KbDocument(BaseModel):
+    """고객사 지식 구축 문서 (수동 추가)"""
+    doc_id: str
+    tenant_id: str = "default"
+    title: str
+    source_type: str = "수동"           # 정책 | FAQ | 약관 | 매뉴얼 | 기타
+    char_count: int = 0
+    chunk_count: int = 0
+    created_at: str | None = None
+    content_preview: str = ""
+
+
+class KbDocumentSubmit(BaseModel):
+    """KB 문서 추가 요청 본문"""
+    title: str = ""
+    content: str = ""
+    source_type: str = "수동"
+
+
 class KbStatus(BaseModel):
     """tenant 지식베이스 현황"""
     tenant_id: str
@@ -243,6 +262,10 @@ class KbStatus(BaseModel):
     last_indexed_at: str | None = None
     avg_context_recall: float = 0.0
     coverage_gaps: list[KbGap] = Field(default_factory=list)
+    # 고객사 지식 구축 (수동 추가 문서)
+    built_documents: list[KbDocument] = Field(default_factory=list)
+    built_document_count: int = 0
+    built_chunk_count: int = 0
 
 
 class CredentialInfo(BaseModel):

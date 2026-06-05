@@ -3,7 +3,7 @@
 > **버전** v1.3 | **작성일** 2026-06-05  
 > **Base URL**: `http://localhost:8000` (로컬 프론트 개발 시 Vite가 `/api` → `:8000` 프록시)  
 > **OpenAPI 문서**: `http://localhost:8000/docs` (FastAPI Swagger UI 자동 생성)  
-> **엔드포인트**: 23개 오퍼레이션(21 path) · **스키마**: 27종 (schemas.py 정의 기준)
+> **엔드포인트**: 25개 오퍼레이션(23 path) · **스키마**: 29종 (schemas.py 정의 기준)
 
 ---
 
@@ -37,6 +37,8 @@ GET  /api/t/{tenant}/trends
 GET  /api/t/{tenant}/agreement
 GET  /api/t/{tenant}/agreement/{metric}
 GET  /api/t/{tenant}/kb
+POST   /api/t/{tenant}/kb/documents          # 고객사 지식 문서 추가 (청킹 후 저장)
+DELETE /api/t/{tenant}/kb/documents/{doc_id} # 구축 문서 삭제
 GET  /api/t/{tenant}/settings
 PUT  /api/t/{tenant}/settings
 PUT    /api/t/{tenant}/credentials/{provider}   # provider API 키 등록 (마스킹 저장)
@@ -615,18 +617,59 @@ ORDER BY recall ASC LIMIT 10
 ```json
 {
   "tenant_id": "acme",
-  "document_count": 42,
-  "chunk_count": 380,
-  "source_types": ["ACME-1000", "ACME-1001"],
-  "last_indexed_at": "2026-06-02T06:09:00Z",
+  "document_count": 8,
+  "chunk_count": 73,
+  "source_types": ["DOC_요금제규정", "DOC_약관해지", "정책"],
+  "last_indexed_at": "2026-06-05T09:00:00Z",
   "avg_context_recall": 0.734,
   "coverage_gaps": [
     { "query": "위약금 계산 방법은?", "conversation_id": "ACME-1007", "context_recall": 0.32 }
-  ]
+  ],
+  "built_documents": [
+    {
+      "doc_id": "kbdoc_a1b2c3d4e5", "tenant_id": "acme",
+      "title": "5G 프리미엄 요금제 안내", "source_type": "정책",
+      "char_count": 320, "chunk_count": 3,
+      "created_at": "2026-06-05T09:00:00Z", "content_preview": "5G 프리미엄 요금제는..."
+    }
+  ],
+  "built_document_count": 1,
+  "built_chunk_count": 3
 }
 ```
 
-> `source_types`: 실제로는 `source_call_id` 목록 (최대 10개). 문서 유형이 아닌 소스 call_id.
+> **document_count / chunk_count** = 검색에서 파생된 소스·청크 + 수동 구축 문서·청크의 합.
+> `built_documents`는 "고객사 지식 구축"으로 추가한 문서만 별도 노출.
+> `source_types`: 파생 소스 call_id + 구축 문서 유형 (최대 12개).
+
+---
+
+### POST /api/t/{tenant}/kb/documents
+
+고객사 지식 문서 추가. 내용을 CP2 child 청크(기본 200자, overlap 50) 기준으로
+청킹해 청크 수를 산정하고 저장합니다.
+
+**요청 본문** — `KbDocumentSubmit`
+```json
+{ "title": "5G 프리미엄 요금제 안내", "content": "5G 프리미엄 요금제는 월 69,000원...", "source_type": "정책" }
+```
+
+| 필드 | 필수 | 설명 |
+|------|------|------|
+| `title` | ✅ | 문서 제목 (빈 값 400) |
+| `content` | ✅ | 문서 본문 (빈 값 400) — 청킹 대상 |
+| `source_type` | — | 정책 / FAQ / 약관 / 매뉴얼 / 상품정보 / 기타 (기본 "수동") |
+
+**응답 200** — `KbStatus` (구축 문서가 반영된 최신 KB 현황)  
+**응답 400** — `{"detail": "문서 제목이 필요합니다."}` / `{"detail": "문서 내용이 필요합니다."}`
+
+---
+
+### DELETE /api/t/{tenant}/kb/documents/{doc_id}
+
+구축 KB 문서 삭제.
+
+**응답 200** — `KbStatus` (삭제 반영된 최신 현황)
 
 ---
 
@@ -770,7 +813,9 @@ provider(anthropic/openai/gemini/azure) API 키 등록. **평문 키는 저장�
 | `TrendPoint` | model_config extra=allow (동적 메트릭 키) |
 | `TrendsResponse` | GET /trends |
 | `KbGap` | KbStatus.coverage_gaps 항목 |
-| `KbStatus` | GET /kb |
+| `KbStatus` | GET /kb (built_documents 포함) |
+| `KbDocument` | KbStatus.built_documents 항목 (구축 지식 문서) |
+| `KbDocumentSubmit` | POST /kb/documents 요청 본문 |
 | `TenantSettings` | GET/PUT /settings (credential_details 포함) |
 | `CredentialInfo` | TenantSettings.credential_details 항목 (provider별 등록 상태·마스킹 키) |
 | `CredentialSubmit` | PUT /credentials/{provider} 요청 본문 |

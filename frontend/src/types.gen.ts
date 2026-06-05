@@ -191,12 +191,52 @@ export interface paths {
         };
         /**
          * Tenant Kb
-         * @description tenant 지식베이스 현황 + 검색 커버리지 갭.
+         * @description tenant 지식베이스 현황 + 검색 커버리지 갭 + 구축 문서.
          */
         get: operations["tenant_kb_api_t__tenant__kb_get"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/kb/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Kb Document
+         * @description 고객사 지식 문서 추가 (제목+내용 → 청킹 후 저장).
+         */
+        post: operations["add_kb_document_api_t__tenant__kb_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/kb/documents/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Kb Document
+         * @description 구축 KB 문서 삭제.
+         */
+        delete: operations["delete_kb_document_api_t__tenant__kb_documents__doc_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -769,6 +809,64 @@ export interface components {
             note: string;
         };
         /**
+         * KbDocument
+         * @description 고객사 지식 구축 문서 (수동 추가)
+         */
+        KbDocument: {
+            /** Doc Id */
+            doc_id: string;
+            /**
+             * Tenant Id
+             * @default default
+             */
+            tenant_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Source Type
+             * @default 수동
+             */
+            source_type: string;
+            /**
+             * Char Count
+             * @default 0
+             */
+            char_count: number;
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Content Preview
+             * @default
+             */
+            content_preview: string;
+        };
+        /**
+         * KbDocumentSubmit
+         * @description KB 문서 추가 요청 본문
+         */
+        KbDocumentSubmit: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Content
+             * @default
+             */
+            content: string;
+            /**
+             * Source Type
+             * @default 수동
+             */
+            source_type: string;
+        };
+        /**
          * KbGap
          * @description 검색 커버리지 갭 — 검색 품질이 낮았던 질의
          */
@@ -811,6 +909,18 @@ export interface components {
             avg_context_recall: number;
             /** Coverage Gaps */
             coverage_gaps?: components["schemas"]["KbGap"][];
+            /** Built Documents */
+            built_documents?: components["schemas"]["KbDocument"][];
+            /**
+             * Built Document Count
+             * @default 0
+             */
+            built_document_count: number;
+            /**
+             * Built Chunk Count
+             * @default 0
+             */
+            built_chunk_count: number;
         };
         /** MetricScoreResponse */
         MetricScoreResponse: {
@@ -1377,6 +1487,73 @@ export interface operations {
             header?: never;
             path: {
                 tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_kb_document_api_t__tenant__kb_documents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KbDocumentSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_kb_document_api_t__tenant__kb_documents__doc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                doc_id: string;
             };
             cookie?: never;
         };

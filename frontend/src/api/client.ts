@@ -10,6 +10,7 @@ import type {
   CredentialSubmit,
   EvaluationRecord,
   JudgeModel,
+  KbDocumentSubmit,
   KbStatus,
   ReviewResult,
   ReviewSubmit,
@@ -86,6 +87,10 @@ export const api = {
   agreementSamples: (tenantId: string, metric: string) =>
     getJSON<AgreementSample[]>(`/t/${tenantId}/agreement/${metric}`),
   kb: (tenantId: string) => getJSON<KbStatus>(`/t/${tenantId}/kb`),
+  kbAddDocument: (tenantId: string, body: KbDocumentSubmit) =>
+    postJSON<KbStatus>(`/t/${tenantId}/kb/documents`, body),
+  kbDeleteDocument: (tenantId: string, docId: string) =>
+    delJSON<KbStatus>(`/t/${tenantId}/kb/documents/${docId}`),
   settings: (tenantId: string) => getJSON<TenantSettings>(`/t/${tenantId}/settings`),
   saveSettings: (tenantId: string, s: TenantSettings) =>
     putJSON<TenantSettings>(`/t/${tenantId}/settings`, s),

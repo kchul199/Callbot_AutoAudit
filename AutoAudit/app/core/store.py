@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS conversations (
     started_at TEXT,
     metadata_json TEXT
 );
+CREATE TABLE IF NOT EXISTS kb_documents (
+    doc_id TEXT PRIMARY KEY,
+    tenant_id TEXT,
+    title TEXT,
+    content TEXT,
+    source_type TEXT DEFAULT '수동',
+    char_count INTEGER DEFAULT 0,
+    chunk_count INTEGER DEFAULT 0,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_kb_tenant ON kb_documents(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_eval_run ON evaluations(run_id);
 CREATE INDEX IF NOT EXISTS idx_eval_call ON evaluations(call_id);
 CREATE INDEX IF NOT EXISTS idx_eval_sub ON evaluations(subscriber_id);
@@ -557,15 +568,90 @@ class ResultStore:
             if r["evaluated_at"] and (last_ts is None or r["evaluated_at"] > last_ts):
                 last_ts = r["evaluated_at"]
         chunks.discard("")
+
+        # 수동 구축 KB 문서 병합 (Knowledge Base 메뉴에서 추가한 고객사 지식)
+        built = self.list_kb_documents(tenant_id)
+        built_chunks = sum(d["chunk_count"] for d in built)
+        built_types = {d["source_type"] for d in built}
+        if built:
+            built_last = max((d["created_at"] for d in built if d["created_at"]), default=None)
+            if built_last and (last_ts is None or built_last > last_ts):
+                last_ts = built_last
+
         return {
             "tenant_id": tenant_id,
-            "document_count": len(sources),
-            "chunk_count": len(chunks),
-            "source_types": sorted(sources)[:10],
+            "document_count": len(sources) + len(built),
+            "chunk_count": len(chunks) + built_chunks,
+            "source_types": sorted(built_types | sources)[:12],
             "last_indexed_at": last_ts,
             "avg_context_recall": round(sum(recalls) / len(recalls), 4) if recalls else 0.0,
             "coverage_gaps": sorted(gaps, key=lambda g: g["context_recall"])[:10],
+            "built_documents": built,
+            "built_document_count": len(built),
+            "built_chunk_count": built_chunks,
         }
+
+    # ----------------------------------------------------------
+    # 고객사 지식 구축 (KB 문서 수동 추가/관리)
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _chunk_text(content: str, child_size: int = 200, overlap: int = 50) -> int:
+        """CP2 child 청크(기본 200자, overlap 50) 기준으로 청크 수 산정."""
+        text = (content or "").strip()
+        if not text:
+            return 0
+        step = max(1, child_size - overlap)
+        return max(1, (len(text) + step - 1) // step)
+
+    def add_kb_document(
+        self, tenant_id: str, title: str, content: str, source_type: str = "수동",
+    ) -> dict[str, Any]:
+        """고객사 지식 문서 추가 — 청킹 후 저장. CP2 인덱싱 입력 후보가 된다."""
+        import uuid
+        from datetime import UTC, datetime
+        title = (title or "").strip()
+        content = (content or "").strip()
+        if not title:
+            raise ValueError("문서 제목이 필요합니다.")
+        if not content:
+            raise ValueError("문서 내용이 필요합니다.")
+        doc_id = f"kbdoc_{uuid.uuid4().hex[:10]}"
+        char_count = len(content)
+        chunk_count = self._chunk_text(content)
+        created_at = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO kb_documents
+                   (doc_id, tenant_id, title, content, source_type, char_count, chunk_count, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (doc_id, tenant_id, title, content, source_type or "수동",
+                 char_count, chunk_count, created_at),
+            )
+        logger.info(f"[kb] 문서 추가 tenant={tenant_id} title={title!r} chunks={chunk_count}")
+        return {
+            "doc_id": doc_id, "tenant_id": tenant_id, "title": title,
+            "source_type": source_type or "수동", "char_count": char_count,
+            "chunk_count": chunk_count, "created_at": created_at,
+            "content_preview": content[:160],
+        }
+
+    def list_kb_documents(self, tenant_id: str) -> list[dict[str, Any]]:
+        """tenant 구축 KB 문서 목록 (최신순)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT doc_id, tenant_id, title, source_type, char_count, chunk_count,
+                          created_at, substr(content, 1, 160) AS content_preview
+                   FROM kb_documents WHERE tenant_id=? ORDER BY created_at DESC""",
+                (tenant_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_kb_document(self, doc_id: str) -> bool:
+        """구축 KB 문서 삭제."""
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM kb_documents WHERE doc_id=?", (doc_id,))
+            return cur.rowcount > 0
 
     def get_evaluation(self, run_id: str, eval_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

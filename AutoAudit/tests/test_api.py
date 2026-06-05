@@ -175,3 +175,41 @@ def test_credential_endpoints(tmp_path, monkeypatch):
     # 삭제 → 미등록 복귀
     r = client.delete("/api/t/acme/credentials/anthropic")
     assert r.json()["credential_details"]["anthropic"]["registered"] is False
+
+
+def test_kb_document_build(tmp_path):
+    """고객사 지식 구축 — KB 문서 추가/청킹/목록/삭제."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "kb.db")))
+    client = TestClient(server.app)
+
+    # 초기: 구축 문서 0
+    assert client.get("/api/t/acme/kb").json()["built_document_count"] == 0
+
+    # 추가 → 청킹되어 카운트 반영
+    long_text = "5G 프리미엄 요금제는 월 69000원입니다. " * 30
+    r = client.post("/api/t/acme/kb/documents",
+                    json={"title": "요금제 정책", "content": long_text, "source_type": "정책"})
+    assert r.status_code == 200
+    kb = r.json()
+    assert kb["built_document_count"] == 1
+    doc = kb["built_documents"][0]
+    assert doc["title"] == "요금제 정책" and doc["source_type"] == "정책"
+    assert doc["chunk_count"] >= 1 and doc["char_count"] == len(long_text.strip())
+    assert kb["built_chunk_count"] == doc["chunk_count"]
+
+    # 빈 제목/내용 거부
+    assert client.post("/api/t/acme/kb/documents", json={"title": "", "content": "x"}).status_code == 400
+    assert client.post("/api/t/acme/kb/documents", json={"title": "x", "content": ""}).status_code == 400
+
+    # 테넌트 격리: globex에는 없음
+    assert client.get("/api/t/globex/kb").json()["built_document_count"] == 0
+
+    # 삭제 → 0 복귀
+    r = client.delete(f"/api/t/acme/kb/documents/{doc['doc_id']}")
+    assert r.json()["built_document_count"] == 0
