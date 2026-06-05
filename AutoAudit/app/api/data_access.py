@@ -109,6 +109,21 @@ class DataAccess:
         self.store.delete_kb_document(doc_id)
         return self.store.kb_status(tenant_id)
 
+    def kb_upload_document(
+        self, tenant_id: str, filename: str, data: bytes,
+        title: str = "", source_type: str = "",
+    ) -> dict[str, Any]:
+        """업로드 파일에서 텍스트를 추출해 KB 문서로 추가 (다양한 포맷 지원)."""
+        from pathlib import Path
+
+        from AutoAudit.app.cp2_knowledge_base.file_loader import extract_text
+        text, detected_type = extract_text(filename, data)
+        doc_title = (title or "").strip() or Path(filename).stem or filename
+        self.store.add_kb_document(
+            tenant_id, doc_title, text, (source_type or "").strip() or detected_type,
+        )
+        return self.store.kb_status(tenant_id)
+
     # provider → 자격증명 환경변수 매핑
     _CRED_ENV = {
         "anthropic": ("ANTHROPIC_API_KEY",),

@@ -3,7 +3,7 @@
 > **버전** v1.3 | **작성일** 2026-06-05  
 > **Base URL**: `http://localhost:8000` (로컬 프론트 개발 시 Vite가 `/api` → `:8000` 프록시)  
 > **OpenAPI 문서**: `http://localhost:8000/docs` (FastAPI Swagger UI 자동 생성)  
-> **엔드포인트**: 25개 오퍼레이션(23 path) · **스키마**: 29종 (schemas.py 정의 기준)
+> **엔드포인트**: 26개 오퍼레이션(24 path) · **스키마**: 29종 (schemas.py 정의 기준)
 
 ---
 
@@ -37,7 +37,8 @@ GET  /api/t/{tenant}/trends
 GET  /api/t/{tenant}/agreement
 GET  /api/t/{tenant}/agreement/{metric}
 GET  /api/t/{tenant}/kb
-POST   /api/t/{tenant}/kb/documents          # 고객사 지식 문서 추가 (청킹 후 저장)
+POST   /api/t/{tenant}/kb/documents          # 고객사 지식 문서 추가 (제목+내용)
+POST   /api/t/{tenant}/kb/documents/upload   # 파일 업로드로 추가 (다양한 포맷)
 DELETE /api/t/{tenant}/kb/documents/{doc_id} # 구축 문서 삭제
 GET  /api/t/{tenant}/settings
 PUT  /api/t/{tenant}/settings
@@ -662,6 +663,38 @@ ORDER BY recall ASC LIMIT 10
 
 **응답 200** — `KbStatus` (구축 문서가 반영된 최신 KB 현황)  
 **응답 400** — `{"detail": "문서 제목이 필요합니다."}` / `{"detail": "문서 내용이 필요합니다."}`
+
+---
+
+### POST /api/t/{tenant}/kb/documents/upload
+
+파일을 업로드해 고객사 지식 추가. 파일에서 텍스트를 추출 → 청킹 후 저장.
+여러 파일 동시 업로드 가능. `source_type` 미지정 시 확장자로 자동 감지.
+
+**요청** — `multipart/form-data`
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `files` | file[] (필수) | 업로드 파일 (다중 가능) |
+| `source_type` | form str (선택) | 미지정 시 확장자 기반 자동 감지 |
+
+**지원 포맷** (확장자 / 추출기)
+
+| 분류 | 포맷 | 추출 |
+|------|------|------|
+| 텍스트 | txt · text · log · rst · md · markdown · xml · yaml · yml | stdlib 디코딩(utf-8→cp949→latin-1) |
+| 표 | csv · tsv | 행을 ` | ` 구분 텍스트로 |
+| 구조화 | json | pretty-print |
+| 웹 | html · htm | 태그 제거(script/style 제외) |
+| 문서 | pdf | pypdf 페이지 텍스트 |
+| 문서 | docx | python-docx 문단+표 |
+| 문서 | xlsx · xlsm | openpyxl 시트/셀 |
+
+> 파일당 최대 5MB, 추출 텍스트 최대 200,000자. 문서 포맷(pdf/docx/xlsx) 파서가
+> 미설치면 해당 파일만 명확한 메시지로 실패 처리(나머지 파일은 정상 처리).
+
+**응답 200** — `KbStatus` (일부라도 성공 시 최신 현황)  
+**응답 400** — 모든 파일 실패 시. 예: `{"detail": "a.exe: 지원하지 않는 형식입니다: '.exe'. ..."}`
 
 ---
 

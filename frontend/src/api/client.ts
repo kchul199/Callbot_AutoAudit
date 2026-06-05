@@ -91,6 +91,18 @@ export const api = {
     postJSON<KbStatus>(`/t/${tenantId}/kb/documents`, body),
   kbDeleteDocument: (tenantId: string, docId: string) =>
     delJSON<KbStatus>(`/t/${tenantId}/kb/documents/${docId}`),
+  kbUploadDocuments: async (tenantId: string, files: File[], sourceType = ""): Promise<KbStatus> => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    if (sourceType) fd.append("source_type", sourceType);
+    const res = await fetch(`/api/t/${tenantId}/kb/documents/upload`, { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { detail = (await res.json()).detail ?? detail; } catch { /* noop */ }
+      throw new Error(detail);
+    }
+    return (await res.json()) as KbStatus;
+  },
   settings: (tenantId: string) => getJSON<TenantSettings>(`/t/${tenantId}/settings`),
   saveSettings: (tenantId: string, s: TenantSettings) =>
     putJSON<TenantSettings>(`/t/${tenantId}/settings`, s),

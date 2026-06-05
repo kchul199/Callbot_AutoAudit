@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, useFetch } from "../api/client";
 import { EmptyState } from "../components/EmptyState";
 import type { KbStatus } from "../types";
 
 const SOURCE_TYPES = ["정책", "FAQ", "약관", "매뉴얼", "상품정보", "기타"];
+const ACCEPT_EXT = ".txt,.md,.markdown,.rst,.log,.text,.csv,.tsv,.json,.xml,.yaml,.yml,.html,.htm,.pdf,.docx,.xlsx,.xlsm";
 
 function Stat({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
   return (
@@ -27,6 +28,12 @@ export default function KnowledgeBase() {
   const [sourceType, setSourceType] = useState(SOURCE_TYPES[0]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // 파일 업로드 상태
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => { if (data) setKb(data); }, [data]);
 
@@ -66,6 +73,34 @@ export default function KnowledgeBase() {
     }
   };
 
+  const uploadFiles = async (fileList: FileList | null) => {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
+    setUploading(true);
+    setUploadMsg(null);
+    setErr(null);
+    const ok: string[] = [];
+    const failed: string[] = [];
+    let latest: KbStatus | null = null;
+    // 파일별 개별 업로드 → 개별 성공/실패 피드백
+    for (const f of files) {
+      try {
+        latest = await api.kbUploadDocuments(tenant!, [f]);  // 포맷 자동 감지(PDF/Word/Excel 등)
+        ok.push(f.name);
+      } catch (e) {
+        failed.push(`${f.name} (${String(e).replace("Error: ", "")})`);
+      }
+    }
+    if (latest) setKb(latest);
+    setUploadMsg(
+      `${ok.length}개 업로드 완료${ok.length ? `: ${ok.join(", ")}` : ""}` +
+      (failed.length ? ` · 실패 ${failed.length}: ${failed.join("; ")}` : "")
+    );
+    if (failed.length && !ok.length) setErr(failed.join("; "));
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   return (
     <div className="content">
       <div className="page-head">
@@ -87,7 +122,36 @@ export default function KnowledgeBase() {
       {/* 고객사 지식 구축 */}
       <div className="card card-pad" style={{ marginBottom: 18 }}>
         <h3>📥 고객사 지식 구축</h3>
-        <div className="card-sub">제목과 내용을 입력하면 청킹되어 KB에 추가됩니다 (CP2 인덱싱 입력).</div>
+        <div className="card-sub">파일을 업로드하거나 내용을 직접 입력하면 청킹되어 KB에 추가됩니다 (CP2 인덱싱 입력).</div>
+
+        {/* 파일 업로드 (드래그 앤 드롭 + 선택) */}
+        <input ref={fileInputRef} type="file" multiple accept={ACCEPT_EXT}
+          style={{ display: "none" }}
+          onChange={(e) => uploadFiles(e.target.files)} />
+        <div
+          className="kb-dropzone"
+          data-drag={dragOver ? "1" : "0"}
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}>
+          <div style={{ fontSize: 26 }}>{uploading ? "⏳" : "📎"}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>
+            {uploading ? "업로드 중…" : "파일을 끌어다 놓거나 클릭해 선택"}
+          </div>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 2 }}>
+            지원: TXT · MD · CSV · TSV · JSON · XML · YAML · HTML · PDF · Word(docx) · Excel(xlsx) · 다중 선택 가능 (최대 5MB/파일)
+          </div>
+        </div>
+        {uploadMsg && (
+          <div className="muted" style={{ fontSize: 12, margin: "8px 0 4px" }}>📋 {uploadMsg}</div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
+          <hr className="sep" style={{ flex: 1, margin: 0 }} />
+          <span className="faint" style={{ fontSize: 11.5 }}>또는 직접 입력</span>
+          <hr className="sep" style={{ flex: 1, margin: 0 }} />
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 160px", gap: 12, marginBottom: 12 }}>
           <div className="field" style={{ marginBottom: 0 }}>

@@ -32,7 +32,7 @@
 | **Review** | 3-pane 휴먼 재평가 워크스페이스 (자동→휴먼 점수 수정/승인) |
 | **Evaluations** | 필터 탐색 + Evidence 드로어 |
 | **Trends** | 일자별/배치별 추이 그래프 + 휴먼·자동 일치도 |
-| **Knowledge Base** | **고객사 지식 구축**(문서 추가·청킹·삭제) + KB 현황 + 검색 커버리지 갭 |
+| **Knowledge Base** | **고객사 지식 구축**(파일 업로드 pdf/docx/xlsx/txt/csv/json/html 등 + 직접 입력·청킹·삭제) + KB 현황 + 검색 커버리지 갭 |
 | **Settings** | SLA 임계값·평가 프로필·Judge 자격증명·알림 |
 
 ---
@@ -207,7 +207,7 @@ python run_pipeline.py --enable context_injection,abstention,numeric_guard
 ## 테스트
 
 ```bash
-pytest AutoAudit/tests/ -q    # 205개 테스트 (mock 모드, API 키 불필요)
+pytest AutoAudit/tests/ -q    # 207개 테스트 (mock 모드, API 키 불필요)
 ruff check AutoAudit/         # 린트
 ```
 
@@ -239,8 +239,8 @@ cp5:
 AutoAudit/app/
   core/          # 설정·로거·Provider·비용·체크포인트·Tracer
   cp1~cp6/       # 파이프라인 단계
-  api/           # FastAPI 서버 + SQLite 데이터 접근 (25개 엔드포인트)
-  tests/         # 205개 pytest 테스트
+  api/           # FastAPI 서버 + SQLite 데이터 접근 (26개 엔드포인트)
+  tests/         # 207개 pytest 테스트
 frontend/        # Vite + React 대시보드 (8개 화면)
 config/          # settings.yaml
 scripts/         # dev_local.sh, seed_mock_data.py, seed_sessions.py, export_openapi.py

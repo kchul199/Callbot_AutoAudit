@@ -242,6 +242,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/t/{tenant}/kb/documents/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Kb Documents
+         * @description 파일 업로드로 고객사 지식 추가 (txt/md/csv/json/html/pdf/docx/xlsx 등).
+         *
+         *     파일에서 텍스트를 추출 → 청킹 후 저장. 여러 파일 동시 업로드 가능.
+         *     모든 파일이 실패하면 400, 일부라도 성공하면 최신 KB 현황 반환.
+         */
+        post: operations["upload_kb_documents_api_t__tenant__kb_documents_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/t/{tenant}/settings": {
         parameters: {
             query?: never;
@@ -545,6 +568,16 @@ export interface components {
             flagged_call_ids?: string[];
             /** Metrics */
             metrics?: components["schemas"]["MetricSummary"][];
+        };
+        /** Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post */
+        Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post: {
+            /** Files */
+            files: string[];
+            /**
+             * Source Type
+             * @default
+             */
+            source_type: string;
         };
         /**
          * ClaimVerdict
@@ -1558,6 +1591,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_kb_documents_api_t__tenant__kb_documents_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

@@ -213,3 +213,68 @@ def test_kb_document_build(tmp_path):
     # 삭제 → 0 복귀
     r = client.delete(f"/api/t/acme/kb/documents/{doc['doc_id']}")
     assert r.json()["built_document_count"] == 0
+
+
+def test_kb_file_upload(tmp_path):
+    """고객사 지식 파일 업로드 — 다양한 포맷 추출 + 미지원/빈파일 거부."""
+    import io
+
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "kb.db")))
+    client = TestClient(server.app)
+    url = "/api/t/acme/kb/documents/upload"
+
+    # txt → source_type 자동 감지 "텍스트"
+    r = client.post(url, files={"files": ("요금.txt", "5G는 월 69000원. " * 20, "text/plain")})
+    assert r.status_code == 200
+    kb = r.json()
+    assert kb["built_document_count"] == 1
+    assert kb["built_documents"][0]["source_type"] == "텍스트"
+    assert kb["built_documents"][0]["title"] == "요금"  # 확장자 제거된 stem
+
+    # csv + json 다중 업로드
+    r = client.post(url, files=[
+        ("files", ("faq.csv", "Q,A\n요금?,69000", "text/csv")),
+        ("files", ("plan.json", '{"price": 69000}', "application/json")),
+    ])
+    assert r.status_code == 200 and r.json()["built_document_count"] == 3
+
+    # docx 추출 (python-docx 설치 시)
+    import docx
+    b = io.BytesIO()
+    d = docx.Document()
+    d.add_paragraph("약관 본문입니다.")
+    d.save(b)
+    r = client.post(url, files={"files": ("약관.docx", b.getvalue(), "application/octet-stream")})
+    assert r.status_code == 200
+    assert any(x["source_type"] == "Word" for x in r.json()["built_documents"])
+
+    # 미지원 포맷 → 400
+    assert client.post(url, files={"files": ("a.exe", b"MZ", "application/octet-stream")}).status_code == 400
+    # 빈 파일 → 400
+    assert client.post(url, files={"files": ("empty.txt", "", "text/plain")}).status_code == 400
+
+
+def test_file_loader_formats():
+    """file_loader.extract_text — 텍스트/HTML/CSV/JSON 포맷별 추출."""
+    from AutoAudit.app.cp2_knowledge_base.file_loader import SUPPORTED_EXTENSIONS, extract_text
+
+    assert ".pdf" in SUPPORTED_EXTENSIONS and ".docx" in SUPPORTED_EXTENSIONS
+    txt, st = extract_text("a.txt", "안녕하세요".encode())
+    assert txt == "안녕하세요" and st == "텍스트"
+    # HTML 태그 제거 + script 제외
+    html = b"<html><body><h1>title</h1><p>content</p><script>bad()</script></body></html>"
+    txt, st = extract_text("a.html", html)
+    assert "title" in txt and "content" in txt and "bad" not in txt and st == "HTML"
+    # CSV → 행 구분
+    txt, _ = extract_text("a.csv", b"a,b\n1,2")
+    assert "a | b" in txt and "1 | 2" in txt
+    # 미지원 확장자
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        extract_text("a.exe", b"data")

@@ -18,7 +18,7 @@ FastAPI 서버 — 대시보드(프론트엔드)가 호출하는 감사 결과 A
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from AutoAudit.app.api.data_access import DataAccess
@@ -185,6 +185,32 @@ def add_kb_document(tenant: str, body: KbDocumentSubmit) -> dict:
 def delete_kb_document(tenant: str, doc_id: str) -> dict:
     """구축 KB 문서 삭제."""
     return data.kb_delete_document(tenant, doc_id)
+
+
+@app.post("/api/t/{tenant}/kb/documents/upload", response_model=KbStatus)
+async def upload_kb_documents(
+    tenant: str,
+    files: list[UploadFile] = File(...),
+    source_type: str = Form(""),
+) -> dict:
+    """파일 업로드로 고객사 지식 추가 (txt/md/csv/json/html/pdf/docx/xlsx 등).
+
+    파일에서 텍스트를 추출 → 청킹 후 저장. 여러 파일 동시 업로드 가능.
+    모든 파일이 실패하면 400, 일부라도 성공하면 최신 KB 현황 반환.
+    """
+    result: dict | None = None
+    errors: list[str] = []
+    for f in files:
+        raw = await f.read()
+        try:
+            result = data.kb_upload_document(
+                tenant, f.filename or "upload", raw, source_type=source_type,
+            )
+        except ValueError as exc:
+            errors.append(f"{f.filename}: {exc}")
+    if result is None:
+        raise HTTPException(status_code=400, detail="; ".join(errors) or "업로드 실패")
+    return result
 
 
 @app.get("/api/t/{tenant}/settings", response_model=TenantSettings)
