@@ -290,6 +290,32 @@ class CredentialSubmit(BaseModel):
     deployment: str = ""
 
 
+class AuditConversationSubmit(BaseModel):
+    """대화 직접 입력 검증 요청 (transcript 또는 JSON 텍스트)."""
+    text: str = ""
+    conversation_id: str = ""
+    ground_truths: list[str] = Field(default_factory=list)  # QA 순서대로 정답(선택)
+    enable: list[str] = Field(default_factory=list)         # 추가 평가기법 토글
+
+
+class AuditMetricResult(BaseModel):
+    metric: str
+    mean: float = 0.0
+    below_sla_count: int = 0
+    total_count: int = 0
+    sla_pass_rate: float = 0.0
+
+
+class AuditRunResult(BaseModel):
+    """대화 검증 실행 결과 요약."""
+    run_id: str
+    conversation_id: str
+    tenant_id: str = "default"
+    total_evaluations: int = 0
+    metrics: list[AuditMetricResult] = Field(default_factory=list)
+    message: str = ""
+
+
 class TenantSettings(BaseModel):
     """tenant 설정 — SLA 임계값·옵션 프로필·Judge·알림"""
     tenant_id: str

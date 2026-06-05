@@ -653,6 +653,15 @@ class ResultStore:
             cur = conn.execute("DELETE FROM kb_documents WHERE doc_id=?", (doc_id,))
             return cur.rowcount > 0
 
+    def kb_documents_for_index(self, tenant_id: str) -> list[dict[str, Any]]:
+        """검색 색인용 — 전체 content 포함 KB 문서 (content_preview가 아닌 원문)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT doc_id, title, content, source_type FROM kb_documents WHERE tenant_id=?",
+                (tenant_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_evaluation(self, run_id: str, eval_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             er = conn.execute(

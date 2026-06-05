@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import type {
   AgreementResult,
   AgreementSample,
+  AuditConversationSubmit,
+  AuditRunResult,
   AuditSummary,
   ConversationDetail,
   ConversationInfo,
@@ -102,6 +104,20 @@ export const api = {
       throw new Error(detail);
     }
     return (await res.json()) as KbStatus;
+  },
+  auditConversation: (tenantId: string, body: AuditConversationSubmit) =>
+    postJSON<AuditRunResult>(`/t/${tenantId}/audit-conversation`, body),
+  auditConversationUpload: async (tenantId: string, file: File, conversationId = ""): Promise<AuditRunResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (conversationId) fd.append("conversation_id", conversationId);
+    const res = await fetch(`/api/t/${tenantId}/audit-conversation/upload`, { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { detail = (await res.json()).detail ?? detail; } catch { /* noop */ }
+      throw new Error(detail);
+    }
+    return (await res.json()) as AuditRunResult;
   },
   settings: (tenantId: string) => getJSON<TenantSettings>(`/t/${tenantId}/settings`),
   saveSettings: (tenantId: string, s: TenantSettings) =>

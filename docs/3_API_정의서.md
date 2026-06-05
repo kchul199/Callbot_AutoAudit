@@ -3,7 +3,7 @@
 > **버전** v1.3 | **작성일** 2026-06-05  
 > **Base URL**: `http://localhost:8000` (로컬 프론트 개발 시 Vite가 `/api` → `:8000` 프록시)  
 > **OpenAPI 문서**: `http://localhost:8000/docs` (FastAPI Swagger UI 자동 생성)  
-> **엔드포인트**: 26개 오퍼레이션(24 path) · **스키마**: 29종 (schemas.py 정의 기준)
+> **엔드포인트**: 28개 오퍼레이션(26 path) · **스키마**: 32종 (schemas.py 정의 기준)
 
 ---
 
@@ -31,6 +31,8 @@ GET  /api/judges
 
 # 테넌트 범위 (tenant_id 필터)
 POST /api/t/{tenant}/runs
+POST /api/t/{tenant}/audit-conversation         # 대화 직접입력 → KB 근거 검증
+POST /api/t/{tenant}/audit-conversation/upload  # 대화 파일(txt/json/csv) → KB 근거 검증
 GET  /api/t/{tenant}/conversations
 GET  /api/t/{tenant}/evaluations
 GET  /api/t/{tenant}/trends
@@ -183,6 +185,65 @@ GET  /api/runs/{run_id}/trends
 ```json
 { "detail": "실 LLM 실행은 아직 미연결 (mock 모드만 지원)" }
 ```
+
+---
+
+### POST /api/t/{tenant}/audit-conversation
+
+콜봇 대화를 **직접 입력(transcript/JSON)** 받아 **고객사 구축 KB를 검색 근거로** 품질 검증.
+흐름: 대화 파싱 → KB 검색기 빌드(`kb_documents`) → QA 추출 → 각 질문 KB 검색 → CP4 평가 → 저장.
+
+**요청 본문** — `AuditConversationSubmit`
+```json
+{
+  "text": "고객: 5G 요금 얼마?\n콜봇: 월 69000원입니다.\n[정답] 5G 프리미엄은 월 69000원입니다.",
+  "conversation_id": "",
+  "ground_truths": [],
+  "enable": []
+}
+```
+
+| 필드 | 설명 |
+|------|------|
+| `text` | transcript("고객:"/"콜봇:" 줄, 선택 "[정답] …") 또는 JSON `{"turns":[…],"ground_truths":[…]}` |
+| `conversation_id` | 선택 — 미지정 시 자동 생성 |
+| `ground_truths` | 선택 — QA 순서대로 정답(있으면 `answer_correctness` 자동 활성) |
+| `enable` | 선택 — 추가 평가기법 토글(예: `["reverse","numeric_guard"]`) |
+
+**동작**: `context_injection`(대화 맥락) 자동 ON, 정답 존재 시 `correctness` 자동 ON.
+
+**응답 200** — `AuditRunResult`
+```json
+{
+  "run_id": "audit_a1b2c3d4",
+  "conversation_id": "manual_xxxx",
+  "tenant_id": "acme",
+  "total_evaluations": 2,
+  "metrics": [
+    {"metric": "faithfulness", "mean": 0.93, "below_sla_count": 0, "total_count": 2, "sla_pass_rate": 1.0},
+    {"metric": "context_recall", "mean": 0.71, "below_sla_count": 1, "total_count": 2, "sla_pass_rate": 0.5}
+  ],
+  "message": "2개 QA 쌍을 고객사 KB 근거로 검증 완료"
+}
+```
+**응답 400** — KB 미구축(`구축된 KB 문서가 없습니다…`) / 대화 인식 실패 / QA 추출 실패
+
+> 결과는 일반 평가와 동일하게 `run_id`/`conversation_id`로 저장되어 Evaluations·
+> Conversations·Review·Overview 화면에서 그대로 조회·검수된다.
+
+---
+
+### POST /api/t/{tenant}/audit-conversation/upload
+
+대화 **파일 업로드**(multipart) → KB 근거 검증. json은 정답(ground_truths) 포함 가능.
+
+| 필드 | 설명 |
+|------|------|
+| `file` | txt(로그/transcript) · json(`{turns,ground_truths}`) · csv |
+| `conversation_id` | form (선택) |
+| `enable` | form (선택, 쉼표구분) |
+
+**응답 200** — `AuditRunResult` · **400** — KB 미구축 / 턴 추출 실패
 
 ---
 
@@ -852,6 +913,9 @@ provider(anthropic/openai/gemini/azure) API 키 등록. **평문 키는 저장�
 | `TenantSettings` | GET/PUT /settings (credential_details 포함) |
 | `CredentialInfo` | TenantSettings.credential_details 항목 (provider별 등록 상태·마스킹 키) |
 | `CredentialSubmit` | PUT /credentials/{provider} 요청 본문 |
+| `AuditConversationSubmit` | POST /audit-conversation 요청 본문 (대화 텍스트+정답+옵션) |
+| `AuditMetricResult` | AuditRunResult.metrics 항목 (메트릭별 평균·SLA) |
+| `AuditRunResult` | POST /audit-conversation 응답 (검증 run 요약) |
 
 ---
 

@@ -25,6 +25,8 @@ from AutoAudit.app.api.data_access import DataAccess
 from AutoAudit.app.api.schemas import (
     AgreementResult,
     AgreementSample,
+    AuditConversationSubmit,
+    AuditRunResult,
     AuditSummaryResponse,
     ConversationDetail,
     ConversationInfo,
@@ -185,6 +187,78 @@ def add_kb_document(tenant: str, body: KbDocumentSubmit) -> dict:
 def delete_kb_document(tenant: str, doc_id: str) -> dict:
     """구축 KB 문서 삭제."""
     return data.kb_delete_document(tenant, doc_id)
+
+
+def _decode_bytes(data: bytes) -> str:
+    for enc in ("utf-8", "cp949", "euc-kr", "latin-1"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _parse_conversation_upload(filename: str, data: bytes):
+    """업로드 대화 파일 → (CallLog, ground_truths). json은 정답 포함 가능."""
+    import tempfile
+    from pathlib import Path
+
+    from AutoAudit.app.cp1_preprocessing.parser import CallLogParser
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+
+    ext = Path(filename or "").suffix.lower()
+    text = _decode_bytes(data)
+    if ext == ".json":
+        return parse_transcript(text, Path(filename).stem)
+    if ext in (".txt", ".csv"):
+        with tempfile.NamedTemporaryFile("w", suffix=ext, delete=False, encoding="utf-8") as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            call_log = CallLogParser().parse_file(tmp)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        if call_log and call_log.turns:
+            return call_log, []
+    # 폴백: transcript 라인 파서
+    return parse_transcript(text, Path(filename or "manual").stem)
+
+
+@app.post("/api/t/{tenant}/audit-conversation", response_model=AuditRunResult)
+async def audit_conversation(tenant: str, body: AuditConversationSubmit) -> dict:
+    """대화 직접 입력(transcript/JSON)을 고객사 KB 근거로 품질 검증."""
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+    call_log, gts = parse_transcript(body.text, body.conversation_id or None)
+    if not call_log.turns:
+        raise HTTPException(status_code=400, detail="대화 내용을 인식하지 못했습니다. '고객:'/'콜봇:' 형식 또는 JSON을 확인하세요.")
+    try:
+        return await data.audit_conversation(
+            tenant, call_log, body.ground_truths or gts,
+            body.conversation_id or None, body.enable,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/t/{tenant}/audit-conversation/upload", response_model=AuditRunResult)
+async def audit_conversation_upload(
+    tenant: str,
+    file: UploadFile = File(...),
+    conversation_id: str = Form(""),
+    enable: str = Form(""),
+) -> dict:
+    """대화 파일(txt/json/csv)을 고객사 KB 근거로 품질 검증."""
+    raw = await file.read()
+    call_log, gts = _parse_conversation_upload(file.filename or "conversation", raw)
+    if not call_log or not call_log.turns:
+        raise HTTPException(status_code=400, detail="대화 파일에서 턴을 추출하지 못했습니다.")
+    enable_list = [x.strip() for x in enable.split(",") if x.strip()]
+    try:
+        return await data.audit_conversation(
+            tenant, call_log, gts, conversation_id or None, enable_list,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/t/{tenant}/kb/documents/upload", response_model=KbStatus)

@@ -28,6 +28,7 @@
 |------|------|
 | **Overview** | KPI·메트릭·추이·SLA미달 + 카드 클릭 **drill-in/out** |
 | **Conversations** | 대화이력 목록(싱글/멀티턴) + 세션 타임라인 + 근거 하이라이트 |
+| **대화 검증** | 콜봇 대화 직접입력/파일 업로드 → **고객사 KB 근거로 품질 검증** (faithfulness·KB recall 등) |
 | **Run Evaluation** | 6스텝 마법사 — Judge모델(Claude/GPT/Gemini, 앙상블)·레벨·메트릭·방법론 |
 | **Review** | 3-pane 휴먼 재평가 워크스페이스 (자동→휴먼 점수 수정/승인) |
 | **Evaluations** | 필터 탐색 + Evidence 드로어 |
@@ -207,7 +208,7 @@ python run_pipeline.py --enable context_injection,abstention,numeric_guard
 ## 테스트
 
 ```bash
-pytest AutoAudit/tests/ -q    # 207개 테스트 (mock 모드, API 키 불필요)
+pytest AutoAudit/tests/ -q    # 210개 테스트 (mock 모드, API 키 불필요)
 ruff check AutoAudit/         # 린트
 ```
 
@@ -239,8 +240,8 @@ cp5:
 AutoAudit/app/
   core/          # 설정·로거·Provider·비용·체크포인트·Tracer
   cp1~cp6/       # 파이프라인 단계
-  api/           # FastAPI 서버 + SQLite 데이터 접근 (26개 엔드포인트)
-  tests/         # 207개 pytest 테스트
+  api/           # FastAPI 서버 + SQLite 데이터 접근 (28개 엔드포인트)
+  tests/         # 210개 pytest 테스트
 frontend/        # Vite + React 대시보드 (8개 화면)
 config/          # settings.yaml
 scripts/         # dev_local.sh, seed_mock_data.py, seed_sessions.py, export_openapi.py

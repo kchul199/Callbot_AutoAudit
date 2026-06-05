@@ -278,3 +278,81 @@ def test_file_loader_formats():
     import pytest as _pytest
     with _pytest.raises(ValueError):
         extract_text("a.exe", b"data")
+
+
+def test_transcript_parser():
+    """직접 입력 transcript/JSON 파싱 + 정답 추출."""
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+
+    # 라인 transcript ("고객:"/"콜봇:") + [정답]
+    text = "고객: 요금 얼마?\n콜봇: 월 69000원입니다.\n[정답] 5G는 월 69000원입니다."
+    log, gts = parse_transcript(text)
+    roles = [t.role.value for t in log.turns]
+    assert roles == ["user", "bot"]
+    assert gts == ["5G는 월 69000원입니다."]
+    # JSON 입력 + ground_truths
+    js = '{"turns":[{"role":"user","content":"해지?"},{"role":"bot","content":"위약금 있음"}],"ground_truths":["약정 잔여기간 비례"]}'
+    log2, gts2 = parse_transcript(js)
+    assert len(log2.turns) == 2 and gts2 == ["약정 잔여기간 비례"]
+
+
+@pytest.mark.asyncio
+async def test_audit_conversation_flow(tmp_path):
+    """대화 검증 — KB 근거로 평가. KB 없으면 400, 있으면 평가 생성."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "audit.db")))
+    client = TestClient(server.app)
+    convo = "고객: 5G 요금 얼마?\n콜봇: 월 69000원입니다.\n[정답] 5G 프리미엄은 월 69000원입니다."
+
+    # KB 없음 → 400
+    r = client.post("/api/t/acme/audit-conversation", json={"text": convo})
+    assert r.status_code == 400 and "KB" in r.json()["detail"]
+
+    # KB 구축 후 검증 → 평가 생성 + 정답성 포함
+    client.post("/api/t/acme/kb/documents",
+                json={"title": "요금", "content": "5G 프리미엄 요금제는 월 69000원이며 데이터 무제한입니다.", "source_type": "정책"})
+    r = client.post("/api/t/acme/audit-conversation", json={"text": convo})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total_evaluations"] == 1
+    metric_names = {m["metric"] for m in d["metrics"]}
+    assert {"faithfulness", "answer_relevance"} <= metric_names
+    assert "answer_correctness" in metric_names  # [정답] 제공 → 정답성 평가
+
+    # 결과가 run/conversation으로 조회됨
+    assert len(client.get(f"/api/runs/{d['run_id']}/evaluations").json()) == 1
+    conv = client.get(f"/api/conversations/{d['conversation_id']}").json()
+    assert len(conv["turns"]) == 2
+
+    # 빈 입력 → 400
+    assert client.post("/api/t/acme/audit-conversation", json={"text": ""}).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_audit_conversation_upload(tmp_path):
+    """대화 파일 업로드 검증 (json/txt)."""
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "audit2.db")))
+    client = TestClient(server.app)
+    client.post("/api/t/acme/kb/documents",
+                json={"title": "배송", "content": "3만원 이상 주문 시 무료배송입니다.", "source_type": "정책"})
+
+    payload = _json.dumps({"turns": [
+        {"role": "user", "content": "무료배송 기준?"},
+        {"role": "bot", "content": "3만원 이상이면 무료입니다."},
+    ]})
+    r = client.post("/api/t/acme/audit-conversation/upload",
+                    files={"file": ("conv.json", payload, "application/json")})
+    assert r.status_code == 200 and r.json()["total_evaluations"] == 1

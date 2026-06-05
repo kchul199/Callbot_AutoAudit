@@ -242,6 +242,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/t/{tenant}/audit-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Audit Conversation
+         * @description 대화 직접 입력(transcript/JSON)을 고객사 KB 근거로 품질 검증.
+         */
+        post: operations["audit_conversation_api_t__tenant__audit_conversation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/audit-conversation/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Audit Conversation Upload
+         * @description 대화 파일(txt/json/csv)을 고객사 KB 근거로 품질 검증.
+         */
+        post: operations["audit_conversation_upload_api_t__tenant__audit_conversation_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/t/{tenant}/kb/documents/upload": {
         parameters: {
             query?: never;
@@ -554,6 +594,78 @@ export interface components {
              */
             agree: boolean;
         };
+        /**
+         * AuditConversationSubmit
+         * @description 대화 직접 입력 검증 요청 (transcript 또는 JSON 텍스트).
+         */
+        AuditConversationSubmit: {
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Conversation Id
+             * @default
+             */
+            conversation_id: string;
+            /** Ground Truths */
+            ground_truths?: string[];
+            /** Enable */
+            enable?: string[];
+        };
+        /** AuditMetricResult */
+        AuditMetricResult: {
+            /** Metric */
+            metric: string;
+            /**
+             * Mean
+             * @default 0
+             */
+            mean: number;
+            /**
+             * Below Sla Count
+             * @default 0
+             */
+            below_sla_count: number;
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+            /**
+             * Sla Pass Rate
+             * @default 0
+             */
+            sla_pass_rate: number;
+        };
+        /**
+         * AuditRunResult
+         * @description 대화 검증 실행 결과 요약.
+         */
+        AuditRunResult: {
+            /** Run Id */
+            run_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Tenant Id
+             * @default default
+             */
+            tenant_id: string;
+            /**
+             * Total Evaluations
+             * @default 0
+             */
+            total_evaluations: number;
+            /** Metrics */
+            metrics?: components["schemas"]["AuditMetricResult"][];
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
         /** AuditSummaryResponse */
         AuditSummaryResponse: {
             /** Run Id */
@@ -568,6 +680,21 @@ export interface components {
             flagged_call_ids?: string[];
             /** Metrics */
             metrics?: components["schemas"]["MetricSummary"][];
+        };
+        /** Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post */
+        Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post: {
+            /** File */
+            file: string;
+            /**
+             * Conversation Id
+             * @default
+             */
+            conversation_id: string;
+            /**
+             * Enable
+             * @default
+             */
+            enable: string;
         };
         /** Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post */
         Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post: {
@@ -1599,6 +1726,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_conversation_api_t__tenant__audit_conversation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuditConversationSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_conversation_upload_api_t__tenant__audit_conversation_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRunResult"];
                 };
             };
             /** @description Validation Error */

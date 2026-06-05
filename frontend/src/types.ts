@@ -30,6 +30,8 @@ export type KbDocumentSubmit = S["KbDocumentSubmit"];
 export type TenantSettings = S["TenantSettings"];
 export type CredentialInfo = S["CredentialInfo"];
 export type CredentialSubmit = S["CredentialSubmit"];
+export type AuditConversationSubmit = S["AuditConversationSubmit"];
+export type AuditRunResult = S["AuditRunResult"];
 
 // 수동 타입 (백엔드 스키마 추가 후 gen:api로 자동화 예정)
 export interface Tenant {

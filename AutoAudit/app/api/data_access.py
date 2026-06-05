@@ -188,6 +188,88 @@ class DataAccess:
             detail_out[prov] = detail
         return bool_out, detail_out
 
+    async def audit_conversation(
+        self,
+        tenant_id: str,
+        call_log: Any,
+        ground_truths: list[str] | None = None,
+        conversation_id: str | None = None,
+        enable: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        대화를 고객사 구축 KB를 근거로 검증 (KB 검색 → QA 추출 → CP4 평가 → 저장).
+
+        반환: {run_id, conversation_id, total_evaluations, metrics[], message}
+        예외: ValueError (KB 없음 / QA 추출 실패)
+        """
+        import uuid
+
+        from AutoAudit.app.core.llm_client import create_provider
+        from AutoAudit.app.core.types import utcnow
+        from AutoAudit.app.cp2_knowledge_base.kb_retriever import build_kb_retriever
+        from AutoAudit.app.cp4_evaluator.judge import LLMJudge
+        from AutoAudit.app.cp4_evaluator.options import EvaluationOptions
+        from AutoAudit.app.cp4_evaluator.qa_builder import QAPairBuilder
+        from AutoAudit.app.cp5_aggregator.aggregator import ResultAggregator
+
+        provider = create_provider()
+
+        # ① 구축 KB → 검색기
+        retriever = await build_kb_retriever(tenant_id, self.store, provider)
+        if retriever is None:
+            raise ValueError("구축된 KB 문서가 없습니다. Knowledge Base에서 먼저 지식을 추가하세요.")
+
+        # ② 대화 → QA 쌍 (+history, ground_truth)
+        conv_id = conversation_id or call_log.call_id
+        builder = QAPairBuilder(retriever=retriever)
+        pairs = builder.extract_pairs(call_log)
+        if not pairs:
+            raise ValueError("대화에서 (질문, 봇답변) 쌍을 추출하지 못했습니다. 입력 형식을 확인하세요.")
+        gts = ground_truths or []
+        for i, p in enumerate(pairs):
+            p.tenant_id = tenant_id
+            p.conversation_id = conv_id
+            if i < len(gts) and gts[i]:
+                p.ground_truth = gts[i]
+        await builder.attach_retrieval(pairs)
+
+        # ③ 평가 (정답 있으면 correctness 자동 활성 + 맥락 주입 ON)
+        opts = EvaluationOptions.from_config().apply_cli_overrides(enable or [], None)
+        opts.context_injection.enabled = True
+        if any(p.ground_truth for p in pairs):
+            opts.correctness.enabled = True
+        records = await LLMJudge(provider=provider, options=opts).evaluate_pairs(pairs)
+
+        run_id = f"audit_{uuid.uuid4().hex[:8]}"
+        for r in records:
+            r.tenant_id = tenant_id
+            r.conversation_id = conv_id
+            r.eval_run_id = run_id
+
+        # ④ 저장: 대화 원문 + 평가 + 요약
+        self.store.upsert_conversation(
+            conversation_id=conv_id, tenant_id=tenant_id,
+            subscriber_id=getattr(call_log, "subscriber_id", "직접입력"),
+            turns=[{"role": t.role.value, "content": t.content} for t in call_log.turns],
+            started_at=utcnow().isoformat(),
+            metadata={"source": "audit", "tenant_id": tenant_id},
+        )
+        self.store.upsert_evaluations(run_id, records)
+        summary = ResultAggregator().aggregate(records, run_id=run_id, options=opts)
+        self.store.upsert_summary(summary)
+
+        return {
+            "run_id": run_id, "conversation_id": conv_id, "tenant_id": tenant_id,
+            "total_evaluations": len(records),
+            "metrics": [
+                {"metric": m.metric, "mean": round(m.mean, 4),
+                 "below_sla_count": m.below_sla_count, "total_count": m.total_count,
+                 "sla_pass_rate": round(m.sla_pass_rate, 4)}
+                for m in summary.metrics
+            ],
+            "message": f"{len(pairs)}개 QA 쌍을 고객사 KB 근거로 검증 완료",
+        }
+
     def get_settings(self, tenant_id: str) -> dict[str, Any]:
         base = self._settings.get(tenant_id) or self._default_settings(tenant_id)
         creds, details = self._compute_credentials(tenant_id)
