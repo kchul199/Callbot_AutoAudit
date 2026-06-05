@@ -207,7 +207,7 @@ python run_pipeline.py --enable context_injection,abstention,numeric_guard
 ## 테스트
 
 ```bash
-pytest AutoAudit/tests/ -q    # 126개 테스트 (mock 모드, API 키 불필요)
+pytest AutoAudit/tests/ -q    # 204개 테스트 (mock 모드, API 키 불필요)
 ruff check AutoAudit/         # 린트
 ```
 
@@ -239,11 +239,11 @@ cp5:
 AutoAudit/app/
   core/          # 설정·로거·Provider·비용·체크포인트·Tracer
   cp1~cp6/       # 파이프라인 단계
-  api/           # FastAPI 서버 + SQLite 데이터 접근
-  tests/         # 126개 pytest 테스트
-frontend/        # Vite + React 대시보드
+  api/           # FastAPI 서버 + SQLite 데이터 접근 (23개 엔드포인트)
+  tests/         # 204개 pytest 테스트
+frontend/        # Vite + React 대시보드 (8개 화면)
 config/          # settings.yaml
-scripts/         # dev_local.sh, seed_sessions.py, export_openapi.py
+scripts/         # dev_local.sh, seed_mock_data.py, seed_sessions.py, export_openapi.py
 docs/            # 산출물 문서
 ```
 

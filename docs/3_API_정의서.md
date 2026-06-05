@@ -1,8 +1,9 @@
 # CallBot AutoAudit — API 정의서
 
-> **버전** v1.2 | **작성일** 2026-06-03  
-> **Base URL**: `http://localhost:8000`  
-> **OpenAPI 문서**: `http://localhost:8000/docs` (FastAPI Swagger UI 자동 생성)
+> **버전** v1.3 | **작성일** 2026-06-05  
+> **Base URL**: `http://localhost:8000` (로컬 프론트 개발 시 Vite가 `/api` → `:8000` 프록시)  
+> **OpenAPI 문서**: `http://localhost:8000/docs` (FastAPI Swagger UI 자동 생성)  
+> **엔드포인트**: 23개 오퍼레이션(21 path) · **스키마**: 27종 (schemas.py 정의 기준)
 
 ---
 
@@ -38,6 +39,8 @@ GET  /api/t/{tenant}/agreement/{metric}
 GET  /api/t/{tenant}/kb
 GET  /api/t/{tenant}/settings
 PUT  /api/t/{tenant}/settings
+PUT    /api/t/{tenant}/credentials/{provider}   # provider API 키 등록 (마스킹 저장)
+DELETE /api/t/{tenant}/credentials/{provider}   # 수동 등록 자격증명 삭제
 GET  /api/t/{tenant}/review-queue
 
 # 전역 범위 (run_id 또는 eval_id 기반)
@@ -155,7 +158,7 @@ GET  /api/runs/{run_id}/trends
 | `ensemble` | boolean | false | 앙상블 Judge (2개 이상 judges 필요) |
 | `levels` | string[] | `["turn"]` | retrieval / turn / session |
 | `metrics` | string[] | `[]` | 빈 배열 = 전체 |
-| `methods` | string[] | `[]` | calibration/ensemble/nugget/diagnosis/statistics/routing/ppi/domain |
+| `methods` | string[] | `[]` | 16종: cot/reverse/correctness/context_injection/abstention/numeric_guard/auto_calibration/calibration/ensemble/meta_eval/nugget/diagnosis/statistics/routing/ppi/domain |
 | `target` | string | "all" | all / unreviewed / 기간 범위 |
 | `temperature` | float | 0.0 | Judge LLM 온도 |
 
@@ -358,9 +361,14 @@ GET  /api/runs/{run_id}/trends
 | `single` | 단일 LLM 호출 |
 | `multi_sample` | N회 샘플링 → 중앙값 |
 | `claim_nli` | RAGAS claim 분해 + NLI (faithfulness 기본) |
+| `cot` | CoT 단계별 추론 강제 (answer_relevance/context_precision/context_recall) |
+| `cot_reverse` | CoT + 역방향 검증 결합 |
+| `reverse` | 역방향 검증 (순방향+역방향 가중 결합) |
 | `g_eval` | G-Eval (앵커+보정, 기댓값) |
 | `ensemble` | 다중 Judge 앙상블 |
 | `nugget` | Nugget recall (context_recall 대체) |
+| `answer_correctness` | 정답 대비 claim F1 + 의미 유사도 (ground_truth 필요) |
+| `abstention_exempt` | 적정 거절로 감점 면제 처리됨 |
 | `ppi_classifier` | HeuristicClassifier 추정 |
 | `domain` | 도메인 메트릭 (PII/일관성) |
 | `session` | SessionEvaluator (세션 전체) |
@@ -636,7 +644,8 @@ ORDER BY recall ASC LIMIT 10
     "faithfulness": 0.80,
     "answer_relevance": 0.75,
     "context_precision": 0.70,
-    "context_recall": 0.70
+    "context_recall": 0.70,
+    "answer_correctness": 0.75
   },
   "eval_profile": "기본",
   "default_judge": "anthropic",
@@ -646,11 +655,29 @@ ORDER BY recall ASC LIMIT 10
     "gemini": false,
     "azure": false
   },
+  "credential_details": {
+    "anthropic": {
+      "provider": "anthropic", "registered": true, "source": "manual",
+      "masked_key": "••••••••1234", "base_url": "",
+      "endpoint": "", "api_version": "", "deployment": "",
+      "updated_at": "2026-06-05T09:00:00Z"
+    },
+    "azure": {
+      "provider": "azure", "registered": false, "source": "none",
+      "masked_key": "", "base_url": "", "endpoint": "",
+      "api_version": "", "deployment": "", "updated_at": null
+    }
+  },
   "slack_webhook": "",
   "notify_on_regression": true,
   "reviewers": ["qa_kim", "qa_lee"]
 }
 ```
+
+> **judge_credentials / credential_details** 는 매 조회 시 **실시간 산출**됩니다:
+> 환경변수(예: `ANTHROPIC_API_KEY`) 존재 시 `source="env"`, 자격증명 엔드포인트로
+> 수동 등록 시 `source="manual"`(마스킹 키 노출), 둘 다 없으면 `registered=false`.
+> (이전 버전의 "mock=1 → 전부 true" 동작은 제거됨. 평문 키는 어떤 응답에도 포함되지 않음.)
 
 > **기본 검수자**: `["qa_kim", "qa_lee"]` (데모 기본값).  
 > **설정 저장**: `DataAccess._settings[tenant_id]` 인메모리 — 서버 재시작 시 초기화됨.
@@ -659,10 +686,48 @@ ORDER BY recall ASC LIMIT 10
 
 ### PUT /api/t/{tenant}/settings
 
-테넌트 설정 저장. 기존 설정과 병합: `{**existing, **new_settings, "tenant_id": tenant_id}`.
+테넌트 설정 저장. 기본값 + 기존 + 신규를 병합하되 **자격증명 필드(`judge_credentials`,
+`credential_details`)는 제외**하고 저장 (자격증명은 전용 엔드포인트로만 갱신).
 
-**요청 본문** — `TenantSettings` (위와 동일)  
-**응답 200** — `TenantSettings` (저장 후 현재 값)
+**요청 본문** — `TenantSettings`  
+**응답 200** — `TenantSettings` (저장 후 현재 값, 자격증명은 실시간 재산출)
+
+---
+
+### PUT /api/t/{tenant}/credentials/{provider}
+
+provider(anthropic/openai/gemini/azure) API 키 등록. **평문 키는 저장하지 않고
+마스킹(마지막 4자리)만 보관**하며, 응답에 평문을 반환하지 않습니다.
+
+**요청 본문** — `CredentialSubmit`
+```json
+{
+  "api_key": "sk-ant-xxxxxxxx1234",
+  "base_url": "",
+  "endpoint": "https://acme.openai.azure.com",
+  "api_version": "2024-06-01",
+  "deployment": "gpt-4o"
+}
+```
+
+| 필드 | 적용 provider | 설명 |
+|------|---------------|------|
+| `api_key` | 전체 (필수) | 빈 값이면 400 |
+| `base_url` | openai/anthropic | 호환 게이트웨이 URL (선택) |
+| `endpoint` | azure | Azure 리소스 엔드포인트 |
+| `api_version` | azure | API 버전 (예: 2024-06-01) |
+| `deployment` | azure | 배포명 (예: gpt-4o) |
+
+**응답 200** — `TenantSettings` (해당 provider가 `registered=true, source="manual"`로 갱신)  
+**응답 400** — `{"detail": "api_key가 필요합니다."}` (빈 키)
+
+---
+
+### DELETE /api/t/{tenant}/credentials/{provider}
+
+수동 등록 자격증명 삭제. 환경변수 기반 등록(`source="env"`)에는 영향 없음.
+
+**응답 200** — `TenantSettings` (해당 provider가 env 유무에 따라 재산출)
 
 ---
 
@@ -706,7 +771,9 @@ ORDER BY recall ASC LIMIT 10
 | `TrendsResponse` | GET /trends |
 | `KbGap` | KbStatus.coverage_gaps 항목 |
 | `KbStatus` | GET /kb |
-| `TenantSettings` | GET/PUT /settings |
+| `TenantSettings` | GET/PUT /settings (credential_details 포함) |
+| `CredentialInfo` | TenantSettings.credential_details 항목 (provider별 등록 상태·마스킹 키) |
+| `CredentialSubmit` | PUT /credentials/{provider} 요청 본문 |
 
 ---
 
