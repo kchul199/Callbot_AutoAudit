@@ -92,6 +92,66 @@ def detect_regression(
     return report
 
 
+@dataclass
+class MetaEvalDrift:
+    """#7 감사기 정확도(메타평가) 회귀 — 직전 run 대비 Judge↔인간 일치도 하락."""
+    has_drift: bool
+    current_rho: float | None
+    previous_rho: float | None
+    delta: float | None        # current - previous (음수 = 일치도 하락)
+    threshold: float
+
+    def summary_text(self) -> str:
+        if self.current_rho is None or self.previous_rho is None:
+            return "메타평가 추세 비교 불가 (골든셋 매칭 부족)"
+        arrow = "▼" if (self.delta or 0) < 0 else "▲"
+        flag = " 🚨 정확도 회귀" if self.has_drift else ""
+        return (
+            f"{arrow} Judge↔인간 ρ: {self.previous_rho:.3f} → {self.current_rho:.3f} "
+            f"({self.delta:+.3f}){flag}"
+        )
+
+
+def _overall_rho(meta_eval: dict | None) -> float | None:
+    if not meta_eval or not meta_eval.get("available"):
+        return None
+    overall = meta_eval.get("overall") or {}
+    rho = overall.get("spearman")
+    return float(rho) if rho is not None else None
+
+
+def detect_meta_eval_drift(
+    current: AuditSummary | dict,
+    previous: AuditSummary | dict | None,
+    rho_threshold: float = 0.7,
+) -> MetaEvalDrift:
+    """#7 현재 run의 메타평가 ρ 가 직전 run 대비 임계 미만으로 하락했는지 판정.
+
+    - 직전 run이 없거나 한쪽 ρ 가 없으면 회귀 없음(비교 불가).
+    - 하락(delta<0)이면서 현재 ρ < rho_threshold 일 때만 회귀로 본다
+      (절대 수준이 충분히 높으면 소폭 하락은 경보하지 않음 → 거짓 알람 감소).
+    """
+    cur_meta = current.meta_eval if isinstance(current, AuditSummary) else current.get("meta_eval")
+    prev_meta = (
+        None if previous is None
+        else previous.meta_eval if isinstance(previous, AuditSummary) else previous.get("meta_eval")
+    )
+    cur_rho = _overall_rho(cur_meta)
+    prev_rho = _overall_rho(prev_meta)
+
+    if cur_rho is None or prev_rho is None:
+        return MetaEvalDrift(False, cur_rho, prev_rho, None, rho_threshold)
+
+    delta = cur_rho - prev_rho
+    has_drift = delta < 0 and cur_rho < rho_threshold
+    drift = MetaEvalDrift(has_drift, cur_rho, prev_rho, delta, rho_threshold)
+    if has_drift:
+        logger.warning(f"감사기 정확도 회귀 감지!\n{drift.summary_text()}")
+    else:
+        logger.info(f"메타평가 추세 안정 — {drift.summary_text()}")
+    return drift
+
+
 def detect_regression_significant(
     current_scores: dict[str, list[float]],
     previous_scores: dict[str, list[float]],

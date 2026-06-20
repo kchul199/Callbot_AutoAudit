@@ -38,10 +38,13 @@ class EnsembleOptions(BaseModel):
 
 
 class MetaEvalOptions(BaseModel):
-    """인간 골든셋 대비 Judge 메타평가"""
-    enabled: bool = False
+    """인간 골든셋 대비 Judge 메타평가 (#7 상시 KPI)"""
+    enabled: bool = True              # 상시 ON — 감사기 자신의 정확도를 측정
     golden_set_path: str = "data/golden_set.jsonl"
     metrics: list[str] = Field(default_factory=lambda: ["spearman", "kappa", "mae"])
+    schedule: str = "per_batch"       # per_batch | daily
+    track_by: list[str] = Field(default_factory=lambda: ["metric"])
+    drift_alert_rho: float = 0.7       # 직전 run 대비 ρ 하락 회귀 경보 임계
 
 
 class NuggetOptions(BaseModel):

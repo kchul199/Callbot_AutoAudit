@@ -90,10 +90,13 @@ evaluation:
     disagreement_threshold: 0.25
     escalate_provider: null
     aggregation: "mean"             # mean | median | escalate
-  meta_eval:                        # 인간 골든셋 대비 Judge 메타평가
-    enabled: false
+  meta_eval:                        # 인간 골든셋 대비 Judge 메타평가 (#7 상시 KPI)
+    enabled: true                   # 상시 ON — 감사기 자신의 정확도를 1급 지표로 측정
     golden_set_path: "data/golden_set.jsonl"
     metrics: ["spearman", "kappa", "mae"]
+    schedule: "per_batch"           # per_batch | daily — 측정 주기
+    track_by: ["metric"]            # 추세 분리 축 (metric / tenant / profile)
+    drift_alert_rho: 0.7            # 직전 run 대비 ρ 가 이 값 미만으로 하락 시 회귀 경보
   nugget:                           # Nugget 기반 context recall
     enabled: false
     max_nuggets: 8

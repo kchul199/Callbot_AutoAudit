@@ -341,3 +341,51 @@ class DataAccess:
                 series.add(m["metric"])
             points.append(point)
         return {"points": points, "metrics": sorted(series)}
+
+    def meta_eval_trends(self) -> dict[str, Any]:
+        """#7 run별 감사기↔인간 일치도(ρ/κ/MAE) 추세.
+
+        저장된 평가(qa_id+scores)를 골든셋과 매칭해 run마다 메타평가를 재계산한다.
+        (별도 영속 스키마 없이 기존 평가 데이터로 on-the-fly 산출 → DB 마이그레이션 불필요)
+        """
+        from AutoAudit.app.cp4_evaluator.meta_eval import MetaEvaluator
+        from AutoAudit.app.cp4_evaluator.options import MetaEvalOptions
+
+        evaluator = MetaEvaluator(MetaEvalOptions())
+        golden = evaluator.load_golden()
+        points: list[dict[str, Any]] = []
+        metrics_seen: set[str] = set()
+
+        if golden:
+            for r in reversed(self.list_runs()):
+                run_id = r["run_id"]
+                evals = self.get_evaluations(run_id)
+                rows = [
+                    (e.get("qa_id") or "", s.get("metric"), s.get("score"))
+                    for e in evals
+                    for s in (e.get("scores") or [])
+                    if s.get("metric") and s.get("score") is not None
+                ]
+                result = evaluator.evaluate_from_rows(rows)
+                if not result.get("available"):
+                    continue
+                overall = result.get("overall", {})
+                point: dict[str, Any] = {
+                    "run_id": run_id,
+                    "generated_at": r.get("generated_at"),
+                    "n": result.get("n"),
+                    "spearman": overall.get("spearman"),
+                    "kappa": overall.get("kappa"),
+                    "mae": overall.get("mae"),
+                }
+                for m, st in (result.get("per_metric") or {}).items():
+                    metrics_seen.add(m)
+                    point[f"{m}__spearman"] = st.get("spearman")
+                    point[f"{m}__mae"] = st.get("mae")
+                points.append(point)
+
+        return {
+            "available": bool(points),
+            "points": points,
+            "metrics": sorted(metrics_seen),
+        }

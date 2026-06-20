@@ -396,3 +396,9 @@ def get_evaluation(run_id: str, eval_id: str) -> dict:
 def get_trends(run_id: str) -> dict:
     """전체 run의 메트릭 평균 추이 (회귀 감지용)"""
     return data.trends()
+
+
+@app.get("/api/meta-eval/trends")
+def get_meta_eval_trends() -> dict:
+    """#7 감사기 자신의 정확도 — run별 Judge↔인간 일치도(ρ/κ/MAE) 추세 (상시 KPI)."""
+    return data.meta_eval_trends()
