@@ -32,6 +32,8 @@ class ConversationTurn(BaseModel):
     role: TurnRole
     content: str
     timestamp: datetime | None = None
+    # #1 봇 턴이 답변 생성 시 실제로 본 RAG 컨텍스트(있으면). faithfulness 평가의 근거 출처.
+    contexts: list[str] = Field(default_factory=list)
 
 
 class CallLog(BaseModel):
@@ -105,7 +107,9 @@ class QAPair(BaseModel):
     question: str                  # User 발화
     bot_answer: str                # 평가 대상 Bot 답변
     turn_index: int                # 원본 대화 내 위치 (추적용)
-    retrieval_result: RetrievalResult | None = None
+    retrieval_result: RetrievalResult | None = None      # 감사기 재검색 컨텍스트 (검색 품질 평가용)
+    provided_context: RetrievalResult | None = None      # 봇이 실제 답변 시 본 RAG 트레이스 (있으면 충실도 평가에 우선)
+    context_source: str = "auditor"   # faithfulness 근거 출처: "bot_trace"(봇 실제) | "auditor"(감사기 재검색)
     ground_truth: str | None = None   # 정답 답변(있으면 유사도 비교 평가)
     history: list[str] = Field(default_factory=list)  # 직전 대화 맥락 ("고객: ...", "콜봇: ...")
 
@@ -199,6 +203,7 @@ class EvaluationRecord(BaseModel):
     query: str
     generated_answer: str
     retrieval_result: RetrievalResult
+    context_source: str = "auditor"   # faithfulness 근거 출처: "bot_trace" | "auditor"
     scores: list[MetricScore] = Field(default_factory=list)
     nuggets: list[Nugget] = Field(default_factory=list)        # nugget recall 활성 시
     diagnosis: DiagnosisVerdict | None = None                  # 진단 활성 시

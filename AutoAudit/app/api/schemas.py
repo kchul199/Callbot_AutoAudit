@@ -199,6 +199,7 @@ class EvaluationResponse(BaseModel):
     judge_model: str = "gpt-4o"
     evaluated_at: str | None = None
     retrieval_result: RetrievalResultResponse | None = None
+    context_source: str = "auditor"   # #1 faithfulness 근거 출처: "bot_trace" | "auditor"
     scores: list[MetricScoreResponse] = Field(default_factory=list)
     # 휴먼 재평가
     review_status: str = "pending"

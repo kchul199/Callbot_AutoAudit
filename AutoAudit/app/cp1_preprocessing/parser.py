@@ -84,6 +84,10 @@ class CallLogParser:
                 role=TurnRole(t.get("role", "user")),
                 content=t.get("content", "").strip(),
                 timestamp=self._safe_dt(t.get("timestamp")),
+                # #1 봇 턴의 실제 RAG 트레이스(있으면). "contexts" 또는 "retrieved_contexts" 허용.
+                contexts=[
+                    str(c) for c in (t.get("contexts") or t.get("retrieved_contexts") or [])
+                ],
             )
             for i, t in enumerate(raw.get("turns", []))
             if len(t.get("content", "")) >= self.min_turn_length

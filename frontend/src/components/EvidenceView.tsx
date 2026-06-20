@@ -112,6 +112,17 @@ export function EvidenceView({
           콜 {record.call_id} · 가입자 {record.subscriber_id ?? "—"} · {record.judge_model}
         </div>
         <h3 style={{ margin: "8px 0" }}>Q. {record.query}</h3>
+        <div style={{ fontSize: 12 }}>
+          {record.context_source === "bot_trace" ? (
+            <span className="badge ok" title="봇이 실제 답변 시 본 RAG 트레이스를 근거로 충실도를 평가했습니다">
+              근거 출처: 봇 실제 컨텍스트
+            </span>
+          ) : (
+            <span className="badge warn" title="봇 트레이스가 없어 감사 시스템이 재검색한 컨텍스트를 근거로 평가했습니다">
+              근거 출처: 감사기 재검색
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="card">

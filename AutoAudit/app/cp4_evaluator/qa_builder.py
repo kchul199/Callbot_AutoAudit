@@ -17,7 +17,13 @@ import uuid
 from AutoAudit.app.core.async_utils import gather_with_concurrency
 from AutoAudit.app.core.config import get as cfg_get
 from AutoAudit.app.core.logger import get_logger
-from AutoAudit.app.core.types import CallLog, QAPair, TurnRole
+from AutoAudit.app.core.types import (
+    CallLog,
+    QAPair,
+    RetrievalResult,
+    RetrievedContext,
+    TurnRole,
+)
 from AutoAudit.app.cp3_retrieval.retriever import HybridRetriever
 
 logger = get_logger(__name__)
@@ -58,10 +64,12 @@ class QAPairBuilder:
             question = " ".join(q_parts).strip()
             q_turn_index = i - 1
 
-            # 직후 Bot 발화 블록 수집
+            # 직후 Bot 발화 블록 수집 (+ #1 봇 실제 RAG 컨텍스트 수집)
             a_parts = []
+            a_contexts: list[str] = []
             while i < len(turns) and turns[i].role == TurnRole.BOT:
                 a_parts.append(turns[i].content)
+                a_contexts.extend(turns[i].contexts)
                 i += 1
             answer = " ".join(a_parts).strip()
 
@@ -70,6 +78,7 @@ class QAPairBuilder:
             if self._is_trivial(answer):
                 continue
 
+            provided = self._build_provided_context(question, a_contexts, call_log.call_id)
             pairs.append(
                 QAPair(
                     qa_id=str(uuid.uuid4()),
@@ -79,11 +88,34 @@ class QAPairBuilder:
                     bot_answer=answer,
                     turn_index=q_turn_index,
                     history=self._format_history(turns[:q_start]),
+                    provided_context=provided,
+                    context_source="bot_trace" if provided else "auditor",
                 )
             )
 
         logger.info(f"[{call_log.call_id}] extracted {len(pairs)} QA pairs")
         return pairs
+
+    @staticmethod
+    def _build_provided_context(
+        question: str, contexts: list[str], call_id: str
+    ) -> RetrievalResult | None:
+        """#1 봇 턴이 실제로 본 컨텍스트 문자열들을 RetrievalResult로 변환 (없으면 None)."""
+        cleaned = [c.strip() for c in contexts if c and c.strip()]
+        if not cleaned:
+            return None
+        return RetrievalResult(
+            query=question,
+            contexts=[
+                RetrievedContext(
+                    chunk_id=f"bot_trace_{k}",
+                    content=c,
+                    score=1.0,
+                    source_call_id=call_id,
+                )
+                for k, c in enumerate(cleaned)
+            ],
+        )
 
     @staticmethod
     def _format_history(prior_turns: list) -> list[str]:
@@ -116,7 +148,10 @@ class QAPairBuilder:
         concurrency = cfg_get("cp3.retrieval_concurrency", default=5)
 
         async def _one(pair: QAPair) -> QAPair:
+            # 감사기 재검색은 항상 수행 (검색 품질 평가 = context_recall/precision 용)
             pair.retrieval_result = await self.retriever.retrieve(pair.question)
+            # #1 컨텍스트 출처: 봇 실제 RAG 트레이스가 주입돼 있으면 충실도 평가에 우선
+            pair.context_source = "bot_trace" if pair.provided_context else "auditor"
             return pair
 
         results = await gather_with_concurrency([_one(p) for p in pairs], concurrency=concurrency)

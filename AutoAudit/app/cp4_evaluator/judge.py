@@ -421,6 +421,7 @@ class LLMJudge:
             retrieval_result=pair.retrieval_result,
             ground_truth=pair.ground_truth,
             history=pair.history,
+            provided_context=pair.provided_context,
         )
         record.qa_id = pair.qa_id
         record.subscriber_id = pair.subscriber_id
@@ -435,16 +436,25 @@ class LLMJudge:
         retrieval_result: RetrievalResult,
         ground_truth: str | None = None,
         history: list[str] | None = None,
+        provided_context: RetrievalResult | None = None,
     ) -> EvaluationRecord:
+        # context_recall / context_precision = 감사기 재검색 컨텍스트 (검색 품질)
         contexts_text = self._format_contexts(retrieval_result)
+        # #1 faithfulness = 봇 실제 RAG 트레이스가 있으면 그것, 없으면 감사기 컨텍스트
+        context_source = "bot_trace" if provided_context else "auditor"
+        faith_contexts_text = (
+            self._format_contexts(provided_context) if provided_context else contexts_text
+        )
 
         # ④ 적정 거절: 답변이 거절/모름이면 정당성을 1회만 판정해 메트릭에 공유
-        abstention_info = await self._assess_abstention(query, generated_answer, contexts_text)
+        # (거절 정당성은 봇이 실제 본 근거 = faithfulness 컨텍스트 기준으로 판정)
+        abstention_info = await self._assess_abstention(query, generated_answer, faith_contexts_text)
 
         coros = [
             self._evaluate_metric(
                 metric, query, generated_answer, contexts_text, retrieval_result,
                 ground_truth=ground_truth, history=history, abstention=abstention_info,
+                faith_contexts_text=faith_contexts_text,
             )
             for metric in self.metrics
         ]
@@ -460,6 +470,7 @@ class LLMJudge:
             query=query,
             generated_answer=generated_answer,
             retrieval_result=retrieval_result,
+            context_source=context_source,
             scores=scores,
             judge_model=self.judge_model,
             ground_truth=ground_truth,
@@ -501,8 +512,13 @@ class LLMJudge:
         ground_truth: str | None = None,
         history: list[str] | None = None,
         abstention=None,
+        faith_contexts_text: str | None = None,
     ) -> MetricScore:
         opts = self.options
+        # #1 faithfulness 는 봇 실제 컨텍스트(faith_contexts_text)를, 검색 품질 메트릭은 감사기 컨텍스트를 사용
+        fctx = faith_contexts_text if faith_contexts_text is not None else contexts_text
+        # 프롬프트용 컨텍스트: faithfulness 만 봇 실제 컨텍스트, 그 외(검색 품질)는 감사기 컨텍스트
+        pctx = fctx if metric == "faithfulness" else contexts_text
 
         # ── ④ 적정 거절 면제: 정당한 거절이면 감점 면제 ──
         if (
@@ -523,21 +539,21 @@ class LLMJudge:
             self._last_nuggets = nuggets
             return await self._maybe_escalate(score, metric, query, answer, contexts_text)
 
-        # ── 특수 경로: claim NLI faithfulness ──
+        # ── 특수 경로: claim NLI faithfulness (봇 실제 컨텍스트 fctx 기준) ──
         if metric == "faithfulness" and self.use_claim_faithfulness:
             if self._faith_eval is None:
                 from AutoAudit.app.cp4_evaluator.faithfulness import FaithfulnessEvaluator
                 self._faith_eval = FaithfulnessEvaluator(self.provider)
-            forward_score = await self._faith_eval.evaluate(answer, contexts_text)
+            forward_score = await self._faith_eval.evaluate(answer, fctx)
 
             # ⑤ 수치 가드: 결정적 수치 환각 포착 → 감점
-            forward_score = self._apply_numeric_guard(forward_score, answer, contexts_text)
+            forward_score = self._apply_numeric_guard(forward_score, answer, fctx)
 
             # 역방향 검증: faithfulness에 reverse 적용
             if opts.reverse.enabled and metric in opts.reverse.metrics:
-                return await self._apply_reverse(forward_score, metric, query, answer, contexts_text)
+                return await self._apply_reverse(forward_score, metric, query, answer, fctx)
 
-            return await self._maybe_escalate(forward_score, metric, query, answer, contexts_text)
+            return await self._maybe_escalate(forward_score, metric, query, answer, fctx)
 
         # ── 앙상블 경로 ──
         if opts.ensemble.enabled:
@@ -545,7 +561,7 @@ class LLMJudge:
                 from AutoAudit.app.cp4_evaluator.ensemble import EnsembleJudge
                 self._ensemble = EnsembleJudge(opts.ensemble)
             prompt = self._build_prompt(
-                metric, query, answer, contexts_text, use_cot=False,
+                metric, query, answer, pctx, use_cot=False,
                 ground_truth=ground_truth, history=history,
             )
             return await self._ensemble.score(metric, prompt, self._SYSTEM)
@@ -556,16 +572,16 @@ class LLMJudge:
                 from AutoAudit.app.cp4_evaluator.calibration import JudgeCalibrator
                 self._calibrator = JudgeCalibrator(self.provider, opts.calibration)
             prompt = self._build_prompt(
-                metric, query, answer, contexts_text, use_cot=False,
+                metric, query, answer, pctx, use_cot=False,
                 ground_truth=ground_truth, history=history,
             )
             score = await self._calibrator.score(metric, prompt, self._SYSTEM)
-            return await self._maybe_escalate(score, metric, query, answer, contexts_text)
+            return await self._maybe_escalate(score, metric, query, answer, pctx)
 
         # ── 기본 경로: CoT 여부 판단 후 샘플링 ──
         use_cot = opts.cot.enabled and metric in opts.cot.metrics
         prompt = self._build_prompt(
-            metric, query, answer, contexts_text, use_cot=use_cot,
+            metric, query, answer, pctx, use_cot=use_cot,
             ground_truth=ground_truth, history=history,
         )
 
@@ -584,9 +600,9 @@ class LLMJudge:
 
         # 역방향 검증 적용
         if opts.reverse.enabled and metric in opts.reverse.metrics:
-            return await self._apply_reverse(forward_score, metric, query, answer, contexts_text)
+            return await self._apply_reverse(forward_score, metric, query, answer, pctx)
 
-        return await self._maybe_escalate(forward_score, metric, query, answer, contexts_text)
+        return await self._maybe_escalate(forward_score, metric, query, answer, pctx)
 
     # ----------------------------------------------------------
     # ① 정답성 / ④ 적정 거절 / ⑤ 수치 가드 헬퍼

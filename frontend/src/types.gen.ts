@@ -915,6 +915,11 @@ export interface components {
             /** Evaluated At */
             evaluated_at?: string | null;
             retrieval_result?: components["schemas"]["RetrievalResultResponse"] | null;
+            /**
+             * Context Source
+             * @default auditor
+             */
+            context_source?: string;
             /** Scores */
             scores?: components["schemas"]["MetricScoreResponse"][];
             /**
