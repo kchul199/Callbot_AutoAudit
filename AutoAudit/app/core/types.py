@@ -112,6 +112,8 @@ class QAPair(BaseModel):
     context_source: str = "auditor"   # faithfulness 근거 출처: "bot_trace"(봇 실제) | "auditor"(감사기 재검색)
     ground_truth: str | None = None   # 정답 답변(있으면 유사도 비교 평가)
     history: list[str] = Field(default_factory=list)  # 직전 대화 맥락 ("고객: ...", "콜봇: ...")
+    intent_idx: int = 0               # #2 한 턴에서 분리된 의도 순번 (0=단일/첫 의도)
+    extraction_method: str = "heuristic"  # #2 추출 방식: heuristic | gated | split
 
 
 # ============================================================

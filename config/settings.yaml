@@ -70,6 +70,10 @@ cp4:
   min_question_len: 4
   min_answer_len: 4
   skip_answer_prefixes: ["안녕하세요", "감사합니다", "네,", "잠시만"]
+  # #2 추출 정확화 — 질문 가치 게이팅 + 다중 의도 분리 (휴리스틱, LLM 0)
+  qa_extraction:
+    worthiness_gate: true        # 백채널·잡담 등 평가 가치 없는 발화 제외
+    multi_intent_split: true     # 한 턴의 복수 의도를 각각 별도 평가 단위로 분리
   # RAGAS claim 단위 faithfulness
   faithfulness:
     use_claim_decomposition: true   # true=claim NLI 분해, false=단일 점수

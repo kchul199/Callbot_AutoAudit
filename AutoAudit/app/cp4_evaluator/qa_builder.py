@@ -41,6 +41,9 @@ class QAPairBuilder:
             "cp4.skip_answer_prefixes",
             default=["안녕하세요", "감사합니다", "네,", "잠시만"],
         )
+        # #2 추출 정확화: 질문 가치 게이팅 + 다중 의도 분리
+        self.worthiness_gate: bool = cfg_get("cp4.qa_extraction.worthiness_gate", default=True)
+        self.multi_intent_split: bool = cfg_get("cp4.qa_extraction.multi_intent_split", default=True)
 
     # ----------------------------------------------------------
     # 1) 대화 → QA 쌍 추출 (검색 전)
@@ -77,24 +80,86 @@ class QAPairBuilder:
                 continue
             if self._is_trivial(answer):
                 continue
+            # #2 질문 가치 게이팅: 정보 요청/업무 질문이 아니면 평가 제외 (백채널·잡담)
+            if self.worthiness_gate and not self._is_question_worthy(question):
+                logger.debug(f"[{call_log.call_id}] 질문 가치 게이팅 제외: {question[:30]!r}")
+                continue
 
             provided = self._build_provided_context(question, a_contexts, call_log.call_id)
-            pairs.append(
-                QAPair(
-                    qa_id=str(uuid.uuid4()),
-                    call_id=call_log.call_id,
-                    subscriber_id=call_log.subscriber_id,
-                    question=question,
-                    bot_answer=answer,
-                    turn_index=q_turn_index,
-                    history=self._format_history(turns[:q_start]),
-                    provided_context=provided,
-                    context_source="bot_trace" if provided else "auditor",
+            history = self._format_history(turns[:q_start])
+            # #2 다중 의도 분리: 한 턴에 독립 의도가 여럿이면 각각 별도 평가 단위로
+            intents = self._split_intents(question) if self.multi_intent_split else [question]
+            method = "split" if len(intents) > 1 else ("gated" if self.worthiness_gate else "heuristic")
+            for k, intent in enumerate(intents):
+                pairs.append(
+                    QAPair(
+                        qa_id=str(uuid.uuid4()),
+                        call_id=call_log.call_id,
+                        subscriber_id=call_log.subscriber_id,
+                        question=intent,
+                        bot_answer=answer,
+                        turn_index=q_turn_index,
+                        history=history,
+                        provided_context=provided,
+                        context_source="bot_trace" if provided else "auditor",
+                        intent_idx=k,
+                        extraction_method=method,
+                    )
                 )
-            )
 
         logger.info(f"[{call_log.call_id}] extracted {len(pairs)} QA pairs")
         return pairs
+
+    # ----------------------------------------------------------
+    # #2 질문 가치 게이팅 + 다중 의도 분리 (휴리스틱, LLM 호출 0)
+    # ----------------------------------------------------------
+
+    # 정보 요청/질문 신호 (의문형 어미·의문사·요청 동사)
+    _QUESTION_MARKERS = (
+        "?", "까", "까요", "나요", "가요", "ㄴ가요", "은가요", "인가요", "될까", "되나",
+        "얼마", "어떻게", "어떤", "어디", "언제", "무엇", "뭐", "뭔", "왜", "몇",
+        "알려", "알 수", "가능", "방법", "여부", "주세요", "해줘", "해 줘", "하고 싶", "싶어",
+        "문의", "확인", "신청", "변경", "해지", "환불", "조회", "되나요",
+        "질문", "문제", "궁금", "요청",
+    )
+    # 평가 가치 없는 순수 백채널/잡담 (짧을 때만 적용)
+    _BACKCHANNEL = {
+        "네", "넵", "응", "어", "음", "아", "예", "그래", "그래요", "맞아요", "맞아",
+        "알겠어요", "알겠습니다", "감사합니다", "고마워요", "고맙습니다", "안녕", "안녕하세요",
+        "ㅇㅋ", "오케이", "ok",
+    }
+
+    def _is_question_worthy(self, question: str) -> bool:
+        """질문이 정보 요청/업무 질문인지 휴리스틱 판정 (고관용: 애매하면 통과)."""
+        q = question.strip()
+        compact = q.replace(" ", "").rstrip(".!~ ")
+        # 순수 백채널 (짧고 stoplist) → 제외
+        if compact and compact.lower() in self._BACKCHANNEL:
+            return False
+        # 의문/요청 신호가 있으면 통과
+        if any(m in q for m in self._QUESTION_MARKERS):
+            return True
+        # 신호가 없어도 충분히 길면(서술형 문제 제기 가능) 통과 — 고관용
+        return len(compact) >= 10
+
+    def _split_intents(self, question: str) -> list[str]:
+        """한 질문을 독립 의도들로 보수적 분리 (과분할 방지).
+
+        문장 종결부호(.,!?。) 또는 명시적 접속어(그리고/또한/추가로/그리고요)로만 분리하고,
+        분리된 조각이 각각 질문 가치가 있을 때만 별도 의도로 인정한다.
+        """
+        import re
+        # 1) 종결부호 기준 1차 분할
+        rough = re.split(r"(?<=[.!?。])\s+", question.strip())
+        # 2) 접속어 기준 2차 분할
+        segments: list[str] = []
+        for chunk in rough:
+            segments.extend(re.split(r"\s*(?:그리고요|그리고|그리구|또한|또|추가로)\s+", chunk))
+        segments = [s.strip(" .,!?~") for s in segments if s.strip(" .,!?~")]
+        # 3) 각 조각이 질문 가치가 있어야 독립 의도로 인정
+        worthy = [s for s in segments if self._is_question_worthy(s)]
+        # 분리 결과가 2개 이상일 때만 분리, 아니면 원문 유지
+        return worthy if len(worthy) >= 2 else [question.strip()]
 
     @staticmethod
     def _build_provided_context(
