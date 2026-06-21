@@ -22,6 +22,7 @@ LLM-as-a-Judge 평가 엔진
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import uuid
 from typing import TYPE_CHECKING
@@ -391,7 +392,12 @@ class LLMJudge:
         self.concurrency: int = cfg_get("cp4.concurrency", default=5)
         self.n_samples: int = cfg_get("cp4.n_samples", default=3)
         self.sample_temperature: float = cfg_get("cp4.sample_temperature", default=0.4)
+        # #5 자기일치성 샘플링 전략: temperature | paraphrase | hybrid
+        self.sampling_strategy: str = cfg_get("cp4.sampling.strategy", default="temperature")
+        self.paraphrase_templates: int = cfg_get("cp4.sampling.paraphrase_templates", default=3)
         self.low_confidence_std: float = cfg_get("cp4.low_confidence_std", default=0.2)
+        # #4 context_precision 청크별 순위가중(precision@k) 산출
+        self.precision_at_k: bool = cfg_get("cp4.precision_at_k", default=True)
         self.use_claim_faithfulness: bool = cfg_get(
             "cp4.faithfulness.use_claim_decomposition", default=True
         )
@@ -585,8 +591,16 @@ class LLMJudge:
             ground_truth=ground_truth, history=history,
         )
 
+        paraphrased = False
         if self.n_samples <= 1:
             samples = [await self._single_call(prompt, metric, self.temperature, use_cot=use_cot)]
+        elif self.sampling_strategy in ("paraphrase", "hybrid"):
+            # #5 표현만 바꾼 변형으로 샘플링 → 상관 오류 감소, 신뢰도(std) 정직화
+            variants = self._paraphrase_variants(prompt, self.n_samples)
+            temp = self.sample_temperature if self.sampling_strategy == "hybrid" else self.temperature
+            coros = [self._single_call(v, metric, temp, use_cot=use_cot) for v in variants]
+            samples = await gather_with_concurrency(coros, concurrency=self.n_samples)
+            paraphrased = True
         else:
             coros = [
                 self._single_call(prompt, metric, self.sample_temperature, use_cot=use_cot)
@@ -597,6 +611,10 @@ class LLMJudge:
         forward_score = self._aggregate_samples(metric, samples)
         if use_cot:
             forward_score.method = "cot"
+        if metric == "context_precision" and self.precision_at_k and use_cot:
+            forward_score.method = "precision_at_k"
+        elif paraphrased and not use_cot:
+            forward_score.method = "multi_sample_paraphrase"
 
         # 역방향 검증 적용
         if opts.reverse.enabled and metric in opts.reverse.metrics:
@@ -645,18 +663,38 @@ class LLMJudge:
         guarded, conflicts = apply_guard(
             score.score, answer, contexts_text,
             penalty_per_conflict=ng.penalty_per_conflict, check_dates=ng.check_dates,
+            check_negation=getattr(ng, "check_negation", False),
+            check_entities=getattr(ng, "check_entities", False),
+            negation_penalty=getattr(ng, "negation_penalty", 0.4),
+            entity_penalty=getattr(ng, "entity_penalty", 0.3),
         )
         if not conflicts:
             return score
         score.score = guarded
         score.numeric_flags = conflicts
         score.is_low_confidence = True
-        score.reasoning = f"[수치 가드 -{len(conflicts)}건: {', '.join(conflicts)}] {score.reasoning}"
+        score.reasoning = f"[결정적 가드 -{len(conflicts)}건: {', '.join(conflicts)}] {score.reasoning}"
         return score
 
     # ----------------------------------------------------------
     # CoT 프롬프트 선택
     # ----------------------------------------------------------
+
+    # #5 패러프레이즈 프레이밍 — 의미는 보존, 표현(관점)만 변주해 상관 오류를 줄인다.
+    #    [0]은 원본(빈 접두사). 본문(프롬프트)은 그대로 두므로 CoT/메트릭 인식이 유지된다.
+    _PARAPHRASE_FRAMINGS = (
+        "",
+        "[관점 A] 아래 평가를 독립적으로, 근거를 먼저 확인한 뒤 신중히 수행하세요.\n",
+        "[관점 B] 동일한 평가를 다른 표현으로 재진술하며 단계적으로 수행하세요.\n",
+        "[관점 C] 아래 기준을 처음 보는 것처럼 보수적으로 재검토하며 평가하세요.\n",
+        "[관점 D] 과대·과소평가를 피하도록 양방향으로 점검하며 평가하세요.\n",
+    )
+
+    def _paraphrase_variants(self, prompt: str, k: int) -> list[str]:
+        """동일 프롬프트의 표현 변형 k개 생성 (#5). 원본 포함, 프레이밍을 순환 적용."""
+        pool_size = max(1, min(self.paraphrase_templates + 1, len(self._PARAPHRASE_FRAMINGS)))
+        pool = self._PARAPHRASE_FRAMINGS[:pool_size]
+        return [pool[i % len(pool)] + prompt for i in range(k)]
 
     def _build_prompt(
         self,
@@ -716,13 +754,63 @@ class LLMJudge:
     # ----------------------------------------------------------
 
     @staticmethod
-    def _parse_cot_score(raw: str, metric: str) -> MetricScore:
-        """CoT 응답에서 단계별 추론 + 최종 점수 추출"""
+    def _rank_weighted_precision(rel: list[int]) -> float:
+        """#4 RAGAS 스타일 순위가중 precision@k.
+
+        precision@k = Σ_k ( (상위 k개 중 관련 수)/k × rel_k ) / 전체 관련 수
+        관련 청크가 상위에 있을수록 높은 점수 → 검색 순위 품질과 정렬.
+        """
+        total_rel = sum(1 for r in rel if r)
+        if total_rel == 0:
+            return 0.0
+        cum = 0
+        acc = 0.0
+        for k, r in enumerate(rel, start=1):
+            if r:
+                cum += 1
+                acc += cum / k
+        return round(acc / total_rel, 4)
+
+    @classmethod
+    def _precision_at_k_from_verdicts(cls, data: dict) -> float | None:
+        """CoT context_precision 응답의 청크별 판정을 순위가중 precision으로 환산.
+
+        step1_verdicts {"[1]": "유용 — ...", "[2]": "불필요 — ..."} 를 순서대로 읽어
+        관련(유용) 여부 벡터를 만들고 precision@k 계산. 판정이 없으면 None(폴백).
+        """
+        verdicts = data.get("step1_verdicts")
+        if not isinstance(verdicts, dict) or not verdicts:
+            return None
+
+        def _idx(key: str) -> int:
+            m = re.search(r"\d+", key)
+            return int(m.group()) if m else 0
+
+        rel: list[int] = []
+        for key in sorted(verdicts, key=_idx):
+            val = str(verdicts[key])
+            rel.append(1 if ("유용" in val and not val.strip().startswith("불필요")) else 0)
+        return cls._rank_weighted_precision(rel)
+
+    @staticmethod
+    def _parse_cot_score(raw: str, metric: str, per_chunk: bool = True) -> MetricScore:
+        """CoT 응답에서 단계별 추론 + 최종 점수 추출
+
+        #4 metric=context_precision 이고 per_chunk=True 면 청크별 판정으로
+        순위가중 precision@k를 산출해 LLM의 홀리스틱 비율 점수를 대체한다.
+        """
         try:
             data = json.loads(raw)
             score = float(data.get("score", 0.0))
             reasoning = data.get("reasoning", "")
             grounding = data.get("grounding_chunks", [])
+
+            # #4 청크별 순위가중 precision@k (판정이 있을 때만 대체, 없으면 LLM 점수 폴백)
+            if metric == "context_precision" and per_chunk:
+                pak = LLMJudge._precision_at_k_from_verdicts(data)
+                if pak is not None:
+                    score = pak
+                    reasoning = f"[precision@k 순위가중={pak:.3f}] {reasoning}"
 
             # 메트릭별 CoT 단계 추출
             cot_steps: list[str] = []
@@ -871,7 +959,7 @@ class LLMJudge:
             prompt, system=self._SYSTEM, temperature=temperature, json_mode=True,
         )
         if use_cot and metric in METRIC_COT_PROMPTS:
-            return self._parse_cot_score(raw, metric)
+            return self._parse_cot_score(raw, metric, per_chunk=self.precision_at_k)
         return self._parse_score(raw, metric)
 
     def _aggregate_samples(self, metric: str, samples: list[MetricScore]) -> MetricScore:

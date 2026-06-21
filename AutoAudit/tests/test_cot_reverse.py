@@ -208,8 +208,10 @@ class TestCoTEvaluation:
                     f"{score.metric}: cot_steps가 리스트여야 함"
                 assert len(score.cot_steps) > 0, \
                     f"{score.metric}: CoT ON이면 cot_steps가 비어있으면 안 됨"
-                assert score.method == "cot", \
-                    f"{score.metric}: method='cot'여야 함"
+                # #4: context_precision은 청크별 순위가중 시 method='precision_at_k'
+                expected = ("cot", "precision_at_k") if score.metric == "context_precision" else ("cot",)
+                assert score.method in expected, \
+                    f"{score.metric}: method가 {expected} 중 하나여야 함 (got {score.method})"
 
     @pytest.mark.asyncio
     async def test_cot_disabled_no_cot_steps(self, sample_qa_pair):

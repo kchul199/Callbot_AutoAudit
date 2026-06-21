@@ -190,8 +190,12 @@ class NumericGuardOptions(BaseModel):
     """
     enabled: bool = False
     apply_to: str = "faithfulness"    # 가드를 적용할 메트릭
-    penalty_per_conflict: float = 0.3  # 충돌 1건당 감점
+    penalty_per_conflict: float = 0.3  # 수치 충돌 1건당 감점
     check_dates: bool = True          # 날짜/기간 표현도 검사
+    check_negation: bool = True       # #6 부정극성 반전 충돌(가능↔불가능)
+    check_entities: bool = True       # #6 엔티티/식별자(조항·코드·고유명사) 충돌
+    negation_penalty: float = 0.4     # 부정극성 충돌 1건당 감점
+    entity_penalty: float = 0.3       # 엔티티 충돌 1건당 감점
 
 
 class FeedbackLoopOptions(BaseModel):
