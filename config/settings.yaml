@@ -171,6 +171,13 @@ evaluation:
     method: "isotonic"             # isotonic | platt | linear | identity
     auto_tune_sla: true            # SLA 임계 자동 탐색
     min_samples: 10                # 메트릭별 최소 골든 샘플
+    feedback_loop:                  # #3 Human Review → 골든셋 환류 (상시 ON)
+      enabled: true
+      golden_set_path: "data/golden_set.jsonl"
+      anchor_pool_path: "data/anchor_pool.jsonl"
+      recalibrate_every: 25         # 신규 골든 N건마다 재보정 권고 로깅
+      anchor_pool_size: 12          # few-shot 앵커 풀 최대 크기
+      disagreement_threshold: 0.3   # |auto-human| 이상이면 앵커로 승격
 
 # --- CP5: 집계 ---
 cp5:

@@ -44,21 +44,45 @@ class JudgeCalibrator:
         self.provider = provider
         self.opts = options
 
-    def decorate_prompt(self, prompt: str) -> str:
-        """앵커/길이정규화 지시문을 프롬프트에 삽입"""
+    def decorate_prompt(self, prompt: str, metric: str | None = None) -> str:
+        """앵커/길이정규화 지시문 + (#3) 사람 검수 기반 동적 few-shot 앵커를 프롬프트에 삽입"""
         out = prompt
         if self.opts.use_anchors:
             out = _ANCHOR_BLOCK + "\n" + out
+        if metric and getattr(self.opts, "use_dynamic_anchors", False):
+            dyn = self._dynamic_anchor_block(metric)
+            if dyn:
+                out = dyn + "\n" + out
         if self.opts.length_normalize:
             out = out + _LENGTH_NORM
         return out
+
+    def _dynamic_anchor_block(self, metric: str) -> str:
+        """#3 사람이 자동 점수를 크게 뒤집은 경계 사례를 few-shot 예시로 렌더링."""
+        try:
+            from AutoAudit.app.cp4_evaluator.golden_store import GoldenStore
+            store = GoldenStore(anchor_path=self.opts.anchor_pool_path)
+            anchors = store.load_anchors(metric, limit=self.opts.dynamic_anchor_count)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not anchors:
+            return ""
+        lines = ["[사람 검수 보정 예시 — 아래 사례의 사람 채점 기준에 맞춰 평가하세요]"]
+        for i, a in enumerate(anchors, 1):
+            q = (a.get("query") or "").strip().replace("\n", " ")[:80]
+            ans = (a.get("answer") or "").strip().replace("\n", " ")[:80]
+            lines.append(
+                f"예시 {i}) 질문: {q} / 답변: {ans} "
+                f"→ 사람 점수 {a.get('human_score')} (자동 {a.get('auto_score')}에서 교정)"
+            )
+        return "\n".join(lines)
 
     async def score(self, metric: str, prompt: str, system: str) -> MetricScore:
         """
         보정된 단일 메트릭 점수.
         g_eval_logprobs=True 면 분포 기댓값, 아니면 다중 샘플 기댓값.
         """
-        decorated = self.decorate_prompt(prompt)
+        decorated = self.decorate_prompt(prompt, metric=metric)
 
         if self.opts.g_eval_logprobs:
             score = await self._g_eval_logprob(decorated, system)

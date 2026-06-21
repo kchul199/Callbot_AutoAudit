@@ -26,6 +26,9 @@ class CalibrationOptions(BaseModel):
     length_normalize: bool = True       # verbosity bias 완화 프롬프트
     use_anchors: bool = True            # 척도 고정용 앵커 예시 삽입
     g_eval_logprobs: bool = False       # logprob 가중 기대점수 (지원 provider 한정)
+    use_dynamic_anchors: bool = True    # #3 사람 검수 불일치 사례를 few-shot 앵커로 주입
+    anchor_pool_path: str = "data/anchor_pool.jsonl"
+    dynamic_anchor_count: int = 4       # 메트릭당 주입할 동적 앵커 최대 수
 
 
 class EnsembleOptions(BaseModel):
@@ -191,6 +194,21 @@ class NumericGuardOptions(BaseModel):
     check_dates: bool = True          # 날짜/기간 표현도 검사
 
 
+class FeedbackLoopOptions(BaseModel):
+    """#3 Human Review → 골든셋 환류 루프
+
+    Review 확정(승인/수정) 시 사람 점수를 골든셋에 누적하고,
+    큰 불일치 사례를 few-shot 앵커 풀에 적재한다.
+    누적분이 recalibrate_every의 배수가 되면 재보정 권고를 로깅한다.
+    """
+    enabled: bool = True
+    golden_set_path: str = "data/golden_set.jsonl"
+    anchor_pool_path: str = "data/anchor_pool.jsonl"
+    recalibrate_every: int = 25       # 신규 골든 N건마다 재보정 권고
+    anchor_pool_size: int = 12        # 앵커 풀 최대 크기 (메트릭별 조회 상한)
+    disagreement_threshold: float = 0.3  # |auto-human| 이상이면 앵커로 승격
+
+
 class AutoCalibrationOptions(BaseModel):
     """휴먼 정합 자동 보정 루프(Auto-Calibration) ⑦
 
@@ -205,6 +223,7 @@ class AutoCalibrationOptions(BaseModel):
     method: str = "isotonic"          # isotonic | platt | linear | identity
     auto_tune_sla: bool = True        # SLA 임계 자동 탐색
     min_samples: int = 10             # 메트릭별 최소 골든 샘플 (미만이면 보정 생략)
+    feedback_loop: FeedbackLoopOptions = Field(default_factory=FeedbackLoopOptions)  # #3
 
 
 class EvaluationOptions(BaseModel):

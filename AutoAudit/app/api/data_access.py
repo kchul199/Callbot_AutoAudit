@@ -74,7 +74,62 @@ class DataAccess:
         return self.store.review_queue(tenant_id=tenant_id, limit=limit)
 
     def record_review(self, eval_id: str, **kwargs: Any) -> bool:
-        return self.store.record_human_review(eval_id, **kwargs)
+        ok = self.store.record_human_review(eval_id, **kwargs)
+        if ok:
+            # #3 Review 환류: 확정된 사람 점수를 골든셋/앵커 풀에 누적 (실패해도 검수는 성공 처리)
+            try:
+                self._feed_review_to_golden(
+                    eval_id,
+                    status=kwargs.get("status", ""),
+                    human_scores=kwargs.get("human_scores") or {},
+                )
+            except Exception as exc:  # noqa: BLE001
+                from AutoAudit.app.core.logger import get_logger
+                get_logger(__name__).warning(f"[review] 골든셋 환류 실패(무시): {exc}")
+        return ok
+
+    def _feed_review_to_golden(
+        self, eval_id: str, status: str, human_scores: dict[str, float]
+    ) -> None:
+        """#3 승인/수정 확정 시 (qa_id, metric, human_score)를 골든셋에 append."""
+        if status not in ("approved", "overridden"):
+            return
+        from AutoAudit.app.cp4_evaluator.golden_store import GoldenStore
+        from AutoAudit.app.cp4_evaluator.options import FeedbackLoopOptions
+
+        opts = FeedbackLoopOptions()
+        if not opts.enabled:
+            return
+        rec = self.store.get_evaluation_by_id(eval_id)
+        if not rec or not rec.get("qa_id"):
+            return
+        auto_scores = {s["metric"]: s["score"] for s in (rec.get("scores") or []) if s.get("metric")}
+        # 승인(approved)인데 명시 점수가 없으면 = 자동 점수에 동의 → 자동 점수를 사람 점수로 채택
+        if status == "approved" and not human_scores:
+            human_scores = dict(auto_scores)
+        if not human_scores:
+            return
+
+        store = GoldenStore(
+            golden_path=opts.golden_set_path,
+            anchor_path=opts.anchor_pool_path,
+            disagreement_threshold=opts.disagreement_threshold,
+            anchor_pool_size=opts.anchor_pool_size,
+        )
+        store.append_review(
+            qa_id=rec["qa_id"],
+            query=rec.get("query", ""),
+            answer=rec.get("generated_answer", ""),
+            auto_scores=auto_scores,
+            human_scores=human_scores,
+        )
+        # 재보정 권고: 누적 골든이 임계 배수에 도달하면 로깅 (다음 파이프라인 run이 반영)
+        total = store.golden_count()
+        if opts.recalibrate_every > 0 and total % opts.recalibrate_every == 0:
+            from AutoAudit.app.core.logger import get_logger
+            get_logger(__name__).info(
+                f"[review] 골든 {total}건 누적 — auto_calibration 재보정 권고 (다음 run 반영)"
+            )
 
     def get_evaluation_any(self, eval_id: str) -> dict[str, Any] | None:
         """run 무관 단일 평가 조회 (검수 워크스페이스용)."""
