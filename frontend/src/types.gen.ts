@@ -191,11 +191,114 @@ export interface paths {
         };
         /**
          * Tenant Kb
-         * @description tenant 지식베이스 현황 + 검색 커버리지 갭.
+         * @description tenant 지식베이스 현황 + 검색 커버리지 갭 + 구축 문서.
          */
         get: operations["tenant_kb_api_t__tenant__kb_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/kb/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Kb Document
+         * @description 고객사 지식 문서 추가 (제목+내용 → 청킹 후 저장).
+         */
+        post: operations["add_kb_document_api_t__tenant__kb_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/kb/documents/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Kb Document
+         * @description 구축 KB 문서 삭제.
+         */
+        delete: operations["delete_kb_document_api_t__tenant__kb_documents__doc_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/audit-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Audit Conversation
+         * @description 대화 직접 입력(transcript/JSON)을 고객사 KB 근거로 품질 검증.
+         */
+        post: operations["audit_conversation_api_t__tenant__audit_conversation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/audit-conversation/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Audit Conversation Upload
+         * @description 대화 파일(txt/json/csv)을 고객사 KB 근거로 품질 검증.
+         */
+        post: operations["audit_conversation_upload_api_t__tenant__audit_conversation_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/kb/documents/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Kb Documents
+         * @description 파일 업로드로 고객사 지식 추가 (txt/md/csv/json/html/pdf/docx/xlsx 등).
+         *
+         *     파일에서 텍스트를 추출 → 청킹 후 저장. 여러 파일 동시 업로드 가능.
+         *     모든 파일이 실패하면 400, 일부라도 성공하면 최신 KB 현황 반환.
+         */
+        post: operations["upload_kb_documents_api_t__tenant__kb_documents_upload_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -221,6 +324,30 @@ export interface paths {
         put: operations["put_settings_api_t__tenant__settings_put"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/t/{tenant}/credentials/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Credential
+         * @description provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미반환).
+         */
+        put: operations["put_credential_api_t__tenant__credentials__provider__put"];
+        post?: never;
+        /**
+         * Delete Credential
+         * @description 수동 등록 자격증명 삭제.
+         */
+        delete: operations["delete_credential_api_t__tenant__credentials__provider__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -467,6 +594,78 @@ export interface components {
              */
             agree: boolean;
         };
+        /**
+         * AuditConversationSubmit
+         * @description 대화 직접 입력 검증 요청 (transcript 또는 JSON 텍스트).
+         */
+        AuditConversationSubmit: {
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Conversation Id
+             * @default
+             */
+            conversation_id: string;
+            /** Ground Truths */
+            ground_truths?: string[];
+            /** Enable */
+            enable?: string[];
+        };
+        /** AuditMetricResult */
+        AuditMetricResult: {
+            /** Metric */
+            metric: string;
+            /**
+             * Mean
+             * @default 0
+             */
+            mean: number;
+            /**
+             * Below Sla Count
+             * @default 0
+             */
+            below_sla_count: number;
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+            /**
+             * Sla Pass Rate
+             * @default 0
+             */
+            sla_pass_rate: number;
+        };
+        /**
+         * AuditRunResult
+         * @description 대화 검증 실행 결과 요약.
+         */
+        AuditRunResult: {
+            /** Run Id */
+            run_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Tenant Id
+             * @default default
+             */
+            tenant_id: string;
+            /**
+             * Total Evaluations
+             * @default 0
+             */
+            total_evaluations: number;
+            /** Metrics */
+            metrics?: components["schemas"]["AuditMetricResult"][];
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
         /** AuditSummaryResponse */
         AuditSummaryResponse: {
             /** Run Id */
@@ -481,6 +680,31 @@ export interface components {
             flagged_call_ids?: string[];
             /** Metrics */
             metrics?: components["schemas"]["MetricSummary"][];
+        };
+        /** Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post */
+        Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post: {
+            /** File */
+            file: string;
+            /**
+             * Conversation Id
+             * @default
+             */
+            conversation_id: string;
+            /**
+             * Enable
+             * @default
+             */
+            enable: string;
+        };
+        /** Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post */
+        Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post: {
+            /** Files */
+            files: string[];
+            /**
+             * Source Type
+             * @default
+             */
+            source_type: string;
         };
         /**
          * ClaimVerdict
@@ -574,6 +798,82 @@ export interface components {
             /** Content */
             content: string;
         };
+        /**
+         * CredentialInfo
+         * @description provider 자격증명 등록 상태 (평문 키는 절대 반환하지 않음 — 마스킹만).
+         */
+        CredentialInfo: {
+            /** Provider */
+            provider: string;
+            /**
+             * Registered
+             * @default false
+             */
+            registered: boolean;
+            /**
+             * Source
+             * @default none
+             */
+            source: string;
+            /**
+             * Masked Key
+             * @default
+             */
+            masked_key: string;
+            /**
+             * Base Url
+             * @default
+             */
+            base_url: string;
+            /**
+             * Endpoint
+             * @default
+             */
+            endpoint: string;
+            /**
+             * Api Version
+             * @default
+             */
+            api_version: string;
+            /**
+             * Deployment
+             * @default
+             */
+            deployment: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * CredentialSubmit
+         * @description provider 자격증명 등록 (PUT 본문) — 평문 키는 저장 시 마스킹 처리.
+         */
+        CredentialSubmit: {
+            /**
+             * Api Key
+             * @default
+             */
+            api_key: string;
+            /**
+             * Base Url
+             * @default
+             */
+            base_url: string;
+            /**
+             * Endpoint
+             * @default
+             */
+            endpoint: string;
+            /**
+             * Api Version
+             * @default
+             */
+            api_version: string;
+            /**
+             * Deployment
+             * @default
+             */
+            deployment: string;
+        };
         /** EvaluationResponse */
         EvaluationResponse: {
             /** Eval Id */
@@ -615,6 +915,11 @@ export interface components {
             /** Evaluated At */
             evaluated_at?: string | null;
             retrieval_result?: components["schemas"]["RetrievalResultResponse"] | null;
+            /**
+             * Context Source
+             * @default auditor
+             */
+            context_source?: string;
             /** Scores */
             scores?: components["schemas"]["MetricScoreResponse"][];
             /**
@@ -669,6 +974,64 @@ export interface components {
             note: string;
         };
         /**
+         * KbDocument
+         * @description 고객사 지식 구축 문서 (수동 추가)
+         */
+        KbDocument: {
+            /** Doc Id */
+            doc_id: string;
+            /**
+             * Tenant Id
+             * @default default
+             */
+            tenant_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Source Type
+             * @default 수동
+             */
+            source_type: string;
+            /**
+             * Char Count
+             * @default 0
+             */
+            char_count: number;
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Content Preview
+             * @default
+             */
+            content_preview: string;
+        };
+        /**
+         * KbDocumentSubmit
+         * @description KB 문서 추가 요청 본문
+         */
+        KbDocumentSubmit: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Content
+             * @default
+             */
+            content: string;
+            /**
+             * Source Type
+             * @default 수동
+             */
+            source_type: string;
+        };
+        /**
          * KbGap
          * @description 검색 커버리지 갭 — 검색 품질이 낮았던 질의
          */
@@ -711,6 +1074,18 @@ export interface components {
             avg_context_recall: number;
             /** Coverage Gaps */
             coverage_gaps?: components["schemas"]["KbGap"][];
+            /** Built Documents */
+            built_documents?: components["schemas"]["KbDocument"][];
+            /**
+             * Built Document Count
+             * @default 0
+             */
+            built_document_count: number;
+            /**
+             * Built Chunk Count
+             * @default 0
+             */
+            built_chunk_count: number;
         };
         /** MetricScoreResponse */
         MetricScoreResponse: {
@@ -947,6 +1322,10 @@ export interface components {
             /** Judge Credentials */
             judge_credentials?: {
                 [key: string]: boolean;
+            };
+            /** Credential Details */
+            credential_details?: {
+                [key: string]: components["schemas"]["CredentialInfo"];
             };
             /**
              * Slack Webhook
@@ -1298,6 +1677,178 @@ export interface operations {
             };
         };
     };
+    add_kb_document_api_t__tenant__kb_documents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KbDocumentSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_kb_document_api_t__tenant__kb_documents__doc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_conversation_api_t__tenant__audit_conversation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuditConversationSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_conversation_upload_api_t__tenant__audit_conversation_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_audit_conversation_upload_api_t__tenant__audit_conversation_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_kb_documents_api_t__tenant__kb_documents_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_kb_documents_api_t__tenant__kb_documents_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_settings_api_t__tenant__settings_get: {
         parameters: {
             query?: never;
@@ -1343,6 +1894,74 @@ export interface operations {
                 "application/json": components["schemas"]["TenantSettings"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_credential_api_t__tenant__credentials__provider__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credential_api_t__tenant__credentials__provider__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

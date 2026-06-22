@@ -64,12 +64,22 @@ cp4:
   concurrency: 5               # 동시 평가 수
   # 신뢰성: 다중 샘플링
   n_samples: 3                 # 메트릭당 평가 반복 횟수 (1=단일)
-  sample_temperature: 0.4      # 샘플 다양성 확보용 온도
+  sample_temperature: 0.4      # 샘플 다양성 확보용 온도 (temperature/hybrid 전략)
   low_confidence_std: 0.2      # 샘플 표준편차 임계 (초과 시 low_confidence)
+  # #5 자기일치성 샘플링 — 표현 변형(paraphrase)으로 상관 오류↓ → 신뢰도 정직화
+  sampling:
+    strategy: "paraphrase"     # temperature | paraphrase | hybrid
+    paraphrase_templates: 3    # 사용할 표현 변형(프레이밍) 수
   # QA 추출 필터
   min_question_len: 4
   min_answer_len: 4
   skip_answer_prefixes: ["안녕하세요", "감사합니다", "네,", "잠시만"]
+  # #2 추출 정확화 — 질문 가치 게이팅 + 다중 의도 분리 (휴리스틱, LLM 0)
+  qa_extraction:
+    worthiness_gate: true        # 백채널·잡담 등 평가 가치 없는 발화 제외
+    multi_intent_split: true     # 한 턴의 복수 의도를 각각 별도 평가 단위로 분리
+  # #4 context_precision 청크별 순위가중(precision@k) — 검색 순위 품질과 정렬
+  precision_at_k: true
   # RAGAS claim 단위 faithfulness
   faithfulness:
     use_claim_decomposition: true   # true=claim NLI 분해, false=단일 점수
@@ -90,10 +100,13 @@ evaluation:
     disagreement_threshold: 0.25
     escalate_provider: null
     aggregation: "mean"             # mean | median | escalate
-  meta_eval:                        # 인간 골든셋 대비 Judge 메타평가
-    enabled: false
+  meta_eval:                        # 인간 골든셋 대비 Judge 메타평가 (#7 상시 KPI)
+    enabled: true                   # 상시 ON — 감사기 자신의 정확도를 1급 지표로 측정
     golden_set_path: "data/golden_set.jsonl"
     metrics: ["spearman", "kappa", "mae"]
+    schedule: "per_batch"           # per_batch | daily — 측정 주기
+    track_by: ["metric"]            # 추세 분리 축 (metric / tenant / profile)
+    drift_alert_rho: 0.7            # 직전 run 대비 ρ 가 이 값 미만으로 하락 시 회귀 경보
   nugget:                           # Nugget 기반 context recall
     enabled: false
     max_nuggets: 8
@@ -121,6 +134,60 @@ evaluation:
     multiturn_consistency: true
     safety_compliance: true
     pii_patterns: ["주민등록번호", "카드번호", "전화번호", "계좌번호"]
+  cot:                              # Chain-of-Thought 단계별 추론 강제 (비용 동일)
+    enabled: true                   # 기본 ON — 추가 비용 없이 정확도 향상
+    metrics:
+      - "answer_relevance"
+      - "context_precision"
+      - "context_recall"
+  reverse:                          # 역방향 검증 (LLM 호출 2×, 고신뢰 프로필용)
+    enabled: false                  # 기본 OFF — --enable reverse 로 활성화
+    metrics:
+      - "faithfulness"
+      - "answer_relevance"
+    weight_forward: 0.6             # 순방향 가중치
+    weight_reverse: 0.4             # 역방향 가중치
+    inconsistency_threshold: 0.25   # |forward-reverse| > 이 값 → is_low_confidence
+  correctness:                      # ① 정답성 + ② 참조 기반 채점 (ground_truth 필요)
+    enabled: false                  # 정답이 있을 때만 --enable correctness
+    metric_name: "answer_correctness"
+    weight_f1: 0.75                 # 정답 대비 claim F1 가중
+    weight_similarity: 0.25         # 정답 대비 의미 유사도 가중
+    reference_guided: true          # answer_relevance에 정답 주입 (②)
+  context_injection:                # ③ 대화 맥락 주입 (멀티턴 후속 턴 오채점 제거)
+    enabled: false                  # --enable context_injection (비용 0)
+    max_history_turns: 6
+    metrics:
+      - "answer_relevance"
+      - "faithfulness"
+  abstention:                       # ④ 적정 거절/모름 판정 (정당한 거절 감점 면제)
+    enabled: false                  # --enable abstention
+    exempt_metrics:
+      - "answer_relevance"
+      - "faithfulness"
+    exempt_score: 1.0
+  numeric_guard:                    # ⑤⑥ 결정적 수치·부정극성·엔티티 가드 (환각 포착, 비용 0)
+    enabled: false                  # --enable numeric_guard
+    apply_to: "faithfulness"
+    penalty_per_conflict: 0.3       # 수치 충돌 1건당 감점
+    check_dates: true
+    check_negation: true            # #6 부정극성 반전(가능↔불가능) 충돌
+    check_entities: true            # #6 엔티티/식별자(조항·코드·고유명사) 충돌
+    negation_penalty: 0.4           # 부정극성 충돌 1건당 감점
+    entity_penalty: 0.3             # 엔티티 충돌 1건당 감점
+  auto_calibration:                 # ⑦ 휴먼 정합 자동 보정 루프 (골든셋 필요)
+    enabled: false                  # --enable auto_calibration
+    golden_set_path: "data/golden_set.jsonl"
+    method: "isotonic"             # isotonic | platt | linear | identity
+    auto_tune_sla: true            # SLA 임계 자동 탐색
+    min_samples: 10                # 메트릭별 최소 골든 샘플
+    feedback_loop:                  # #3 Human Review → 골든셋 환류 (상시 ON)
+      enabled: true
+      golden_set_path: "data/golden_set.jsonl"
+      anchor_pool_path: "data/anchor_pool.jsonl"
+      recalibrate_every: 25         # 신규 골든 N건마다 재보정 권고 로깅
+      anchor_pool_size: 12          # few-shot 앵커 풀 최대 크기
+      disagreement_threshold: 0.3   # |auto-human| 이상이면 앵커로 승격
 
 # --- CP5: 집계 ---
 cp5:
@@ -129,6 +196,7 @@ cp5:
     answer_relevance: 0.75
     context_precision: 0.7
     context_recall: 0.7
+    answer_correctness: 0.75   # ① 정답성 (correctness 활성 시)
   group_by: ["call_id", "subscriber_id", "date"]
 
 # --- CP6: 리포트 ---

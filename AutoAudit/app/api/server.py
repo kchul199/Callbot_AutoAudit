@@ -18,19 +18,23 @@ FastAPI 서버 — 대시보드(프론트엔드)가 호출하는 감사 결과 A
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from AutoAudit.app.api.data_access import DataAccess
 from AutoAudit.app.api.schemas import (
     AgreementResult,
     AgreementSample,
+    AuditConversationSubmit,
+    AuditRunResult,
     AuditSummaryResponse,
     ConversationDetail,
     ConversationInfo,
+    CredentialSubmit,
     EvaluationResponse,
     HealthResponse,
     JudgeModel,
+    KbDocumentSubmit,
     KbStatus,
     ReviewResult,
     ReviewSubmit,
@@ -166,8 +170,121 @@ def tenant_agreement_samples(tenant: str, metric: str) -> list:
 
 @app.get("/api/t/{tenant}/kb", response_model=KbStatus)
 def tenant_kb(tenant: str) -> dict:
-    """tenant 지식베이스 현황 + 검색 커버리지 갭."""
+    """tenant 지식베이스 현황 + 검색 커버리지 갭 + 구축 문서."""
     return data.kb_status(tenant)
+
+
+@app.post("/api/t/{tenant}/kb/documents", response_model=KbStatus)
+def add_kb_document(tenant: str, body: KbDocumentSubmit) -> dict:
+    """고객사 지식 문서 추가 (제목+내용 → 청킹 후 저장)."""
+    try:
+        return data.kb_add_document(tenant, body.title, body.content, body.source_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/t/{tenant}/kb/documents/{doc_id}", response_model=KbStatus)
+def delete_kb_document(tenant: str, doc_id: str) -> dict:
+    """구축 KB 문서 삭제."""
+    return data.kb_delete_document(tenant, doc_id)
+
+
+def _decode_bytes(data: bytes) -> str:
+    for enc in ("utf-8", "cp949", "euc-kr", "latin-1"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _parse_conversation_upload(filename: str, data: bytes):
+    """업로드 대화 파일 → (CallLog, ground_truths). json은 정답 포함 가능."""
+    import tempfile
+    from pathlib import Path
+
+    from AutoAudit.app.cp1_preprocessing.parser import CallLogParser
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+
+    ext = Path(filename or "").suffix.lower()
+    text = _decode_bytes(data)
+    if ext == ".json":
+        return parse_transcript(text, Path(filename).stem)
+    if ext in (".txt", ".csv"):
+        with tempfile.NamedTemporaryFile("w", suffix=ext, delete=False, encoding="utf-8") as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            call_log = CallLogParser().parse_file(tmp)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        if call_log and call_log.turns:
+            return call_log, []
+    # 폴백: transcript 라인 파서
+    return parse_transcript(text, Path(filename or "manual").stem)
+
+
+@app.post("/api/t/{tenant}/audit-conversation", response_model=AuditRunResult)
+async def audit_conversation(tenant: str, body: AuditConversationSubmit) -> dict:
+    """대화 직접 입력(transcript/JSON)을 고객사 KB 근거로 품질 검증."""
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+    call_log, gts = parse_transcript(body.text, body.conversation_id or None)
+    if not call_log.turns:
+        raise HTTPException(status_code=400, detail="대화 내용을 인식하지 못했습니다. '고객:'/'콜봇:' 형식 또는 JSON을 확인하세요.")
+    try:
+        return await data.audit_conversation(
+            tenant, call_log, body.ground_truths or gts,
+            body.conversation_id or None, body.enable,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/t/{tenant}/audit-conversation/upload", response_model=AuditRunResult)
+async def audit_conversation_upload(
+    tenant: str,
+    file: UploadFile = File(...),
+    conversation_id: str = Form(""),
+    enable: str = Form(""),
+) -> dict:
+    """대화 파일(txt/json/csv)을 고객사 KB 근거로 품질 검증."""
+    raw = await file.read()
+    call_log, gts = _parse_conversation_upload(file.filename or "conversation", raw)
+    if not call_log or not call_log.turns:
+        raise HTTPException(status_code=400, detail="대화 파일에서 턴을 추출하지 못했습니다.")
+    enable_list = [x.strip() for x in enable.split(",") if x.strip()]
+    try:
+        return await data.audit_conversation(
+            tenant, call_log, gts, conversation_id or None, enable_list,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/t/{tenant}/kb/documents/upload", response_model=KbStatus)
+async def upload_kb_documents(
+    tenant: str,
+    files: list[UploadFile] = File(...),
+    source_type: str = Form(""),
+) -> dict:
+    """파일 업로드로 고객사 지식 추가 (txt/md/csv/json/html/pdf/docx/xlsx 등).
+
+    파일에서 텍스트를 추출 → 청킹 후 저장. 여러 파일 동시 업로드 가능.
+    모든 파일이 실패하면 400, 일부라도 성공하면 최신 KB 현황 반환.
+    """
+    result: dict | None = None
+    errors: list[str] = []
+    for f in files:
+        raw = await f.read()
+        try:
+            result = data.kb_upload_document(
+                tenant, f.filename or "upload", raw, source_type=source_type,
+            )
+        except ValueError as exc:
+            errors.append(f"{f.filename}: {exc}")
+    if result is None:
+        raise HTTPException(status_code=400, detail="; ".join(errors) or "업로드 실패")
+    return result
 
 
 @app.get("/api/t/{tenant}/settings", response_model=TenantSettings)
@@ -180,6 +297,21 @@ def get_settings(tenant: str) -> dict:
 def put_settings(tenant: str, settings: TenantSettings) -> dict:
     """tenant 설정 저장."""
     return data.save_settings(tenant, settings.model_dump(exclude={"tenant_id"}))
+
+
+@app.put("/api/t/{tenant}/credentials/{provider}", response_model=TenantSettings)
+def put_credential(tenant: str, provider: str, body: CredentialSubmit) -> dict:
+    """provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미반환)."""
+    try:
+        return data.save_credential(tenant, provider, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/t/{tenant}/credentials/{provider}", response_model=TenantSettings)
+def delete_credential(tenant: str, provider: str) -> dict:
+    """수동 등록 자격증명 삭제."""
+    return data.delete_credential(tenant, provider)
 
 
 @app.get("/api/t/{tenant}/review-queue", response_model=list[EvaluationResponse])
@@ -264,3 +396,9 @@ def get_evaluation(run_id: str, eval_id: str) -> dict:
 def get_trends(run_id: str) -> dict:
     """전체 run의 메트릭 평균 추이 (회귀 감지용)"""
     return data.trends()
+
+
+@app.get("/api/meta-eval/trends")
+def get_meta_eval_trends() -> dict:
+    """#7 감사기 자신의 정확도 — run별 Judge↔인간 일치도(ρ/κ/MAE) 추세 (상시 KPI)."""
+    return data.meta_eval_trends()

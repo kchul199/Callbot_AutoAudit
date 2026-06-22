@@ -199,6 +199,7 @@ class EvaluationResponse(BaseModel):
     judge_model: str = "gpt-4o"
     evaluated_at: str | None = None
     retrieval_result: RetrievalResultResponse | None = None
+    context_source: str = "auditor"   # #1 faithfulness 근거 출처: "bot_trace" | "auditor"
     scores: list[MetricScoreResponse] = Field(default_factory=list)
     # 휴먼 재평가
     review_status: str = "pending"
@@ -234,6 +235,25 @@ class KbGap(BaseModel):
     context_recall: float = 0.0
 
 
+class KbDocument(BaseModel):
+    """고객사 지식 구축 문서 (수동 추가)"""
+    doc_id: str
+    tenant_id: str = "default"
+    title: str
+    source_type: str = "수동"           # 정책 | FAQ | 약관 | 매뉴얼 | 기타
+    char_count: int = 0
+    chunk_count: int = 0
+    created_at: str | None = None
+    content_preview: str = ""
+
+
+class KbDocumentSubmit(BaseModel):
+    """KB 문서 추가 요청 본문"""
+    title: str = ""
+    content: str = ""
+    source_type: str = "수동"
+
+
 class KbStatus(BaseModel):
     """tenant 지식베이스 현황"""
     tenant_id: str
@@ -243,6 +263,58 @@ class KbStatus(BaseModel):
     last_indexed_at: str | None = None
     avg_context_recall: float = 0.0
     coverage_gaps: list[KbGap] = Field(default_factory=list)
+    # 고객사 지식 구축 (수동 추가 문서)
+    built_documents: list[KbDocument] = Field(default_factory=list)
+    built_document_count: int = 0
+    built_chunk_count: int = 0
+
+
+class CredentialInfo(BaseModel):
+    """provider 자격증명 등록 상태 (평문 키는 절대 반환하지 않음 — 마스킹만)."""
+    provider: str
+    registered: bool = False
+    source: str = "none"            # env | manual | mock | none
+    masked_key: str = ""            # 예: ••••••••abcd (마지막 4자리만)
+    base_url: str = ""              # openai/anthropic 호환 게이트웨이 (선택)
+    endpoint: str = ""              # azure 엔드포인트
+    api_version: str = ""           # azure API 버전
+    deployment: str = ""            # azure 배포명
+    updated_at: str | None = None
+
+
+class CredentialSubmit(BaseModel):
+    """provider 자격증명 등록 (PUT 본문) — 평문 키는 저장 시 마스킹 처리."""
+    api_key: str = ""
+    base_url: str = ""
+    endpoint: str = ""
+    api_version: str = ""
+    deployment: str = ""
+
+
+class AuditConversationSubmit(BaseModel):
+    """대화 직접 입력 검증 요청 (transcript 또는 JSON 텍스트)."""
+    text: str = ""
+    conversation_id: str = ""
+    ground_truths: list[str] = Field(default_factory=list)  # QA 순서대로 정답(선택)
+    enable: list[str] = Field(default_factory=list)         # 추가 평가기법 토글
+
+
+class AuditMetricResult(BaseModel):
+    metric: str
+    mean: float = 0.0
+    below_sla_count: int = 0
+    total_count: int = 0
+    sla_pass_rate: float = 0.0
+
+
+class AuditRunResult(BaseModel):
+    """대화 검증 실행 결과 요약."""
+    run_id: str
+    conversation_id: str
+    tenant_id: str = "default"
+    total_evaluations: int = 0
+    metrics: list[AuditMetricResult] = Field(default_factory=list)
+    message: str = ""
 
 
 class TenantSettings(BaseModel):
@@ -252,6 +324,7 @@ class TenantSettings(BaseModel):
     eval_profile: str = "기본"                # 빠른 점검 | 고신뢰 | 검색 진단 | 안전성 감사
     default_judge: str = "anthropic"
     judge_credentials: dict[str, bool] = Field(default_factory=dict)  # provider → 등록 여부
+    credential_details: dict[str, CredentialInfo] = Field(default_factory=dict)  # provider → 상세
     slack_webhook: str = ""
     notify_on_regression: bool = True
     reviewers: list[str] = Field(default_factory=list)

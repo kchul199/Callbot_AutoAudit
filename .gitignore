@@ -9,6 +9,8 @@ __pycache__/
 data/chroma_db/
 data/results/
 data/processed/
+# seed_mock_data.py / 파이프라인이 재생성하는 골든셋
+data/golden_set.jsonl
 
 # 환경
 .env

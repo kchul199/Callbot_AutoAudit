@@ -20,6 +20,7 @@ const SECTIONS: { title: string; items: NavDef[] }[] = [
   {
     title: "평가",
     items: [
+      { to: "audit", icon: "🎯", label: "대화 검증" },
       { to: "runs", icon: "▶", label: "Run Evaluation" },
       { to: "review", icon: "✅", label: "Review", badgeKey: "review" },
       { to: "evaluations", icon: "🔍", label: "Evaluations" },

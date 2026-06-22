@@ -4,11 +4,15 @@ import { useEffect, useState } from "react";
 import type {
   AgreementResult,
   AgreementSample,
+  AuditConversationSubmit,
+  AuditRunResult,
   AuditSummary,
   ConversationDetail,
   ConversationInfo,
+  CredentialSubmit,
   EvaluationRecord,
   JudgeModel,
+  KbDocumentSubmit,
   KbStatus,
   ReviewResult,
   ReviewSubmit,
@@ -36,6 +40,12 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return (await res.json()) as T;
+}
+
+async function delJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`/api${path}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return (await res.json()) as T;
 }
@@ -79,9 +89,43 @@ export const api = {
   agreementSamples: (tenantId: string, metric: string) =>
     getJSON<AgreementSample[]>(`/t/${tenantId}/agreement/${metric}`),
   kb: (tenantId: string) => getJSON<KbStatus>(`/t/${tenantId}/kb`),
+  kbAddDocument: (tenantId: string, body: KbDocumentSubmit) =>
+    postJSON<KbStatus>(`/t/${tenantId}/kb/documents`, body),
+  kbDeleteDocument: (tenantId: string, docId: string) =>
+    delJSON<KbStatus>(`/t/${tenantId}/kb/documents/${docId}`),
+  kbUploadDocuments: async (tenantId: string, files: File[], sourceType = ""): Promise<KbStatus> => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    if (sourceType) fd.append("source_type", sourceType);
+    const res = await fetch(`/api/t/${tenantId}/kb/documents/upload`, { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { detail = (await res.json()).detail ?? detail; } catch { /* noop */ }
+      throw new Error(detail);
+    }
+    return (await res.json()) as KbStatus;
+  },
+  auditConversation: (tenantId: string, body: AuditConversationSubmit) =>
+    postJSON<AuditRunResult>(`/t/${tenantId}/audit-conversation`, body),
+  auditConversationUpload: async (tenantId: string, file: File, conversationId = ""): Promise<AuditRunResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (conversationId) fd.append("conversation_id", conversationId);
+    const res = await fetch(`/api/t/${tenantId}/audit-conversation/upload`, { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { detail = (await res.json()).detail ?? detail; } catch { /* noop */ }
+      throw new Error(detail);
+    }
+    return (await res.json()) as AuditRunResult;
+  },
   settings: (tenantId: string) => getJSON<TenantSettings>(`/t/${tenantId}/settings`),
   saveSettings: (tenantId: string, s: TenantSettings) =>
     putJSON<TenantSettings>(`/t/${tenantId}/settings`, s),
+  saveCredential: (tenantId: string, provider: string, body: CredentialSubmit) =>
+    putJSON<TenantSettings>(`/t/${tenantId}/credentials/${provider}`, body),
+  deleteCredential: (tenantId: string, provider: string) =>
+    delJSON<TenantSettings>(`/t/${tenantId}/credentials/${provider}`),
   runs: () => getJSON<RunInfo[]>("/runs"),
   summary: (runId: string) => getJSON<AuditSummary>(`/runs/${runId}/summary`),
   trends: (runId: string) => getJSON<TrendData>(`/runs/${runId}/trends`),

@@ -28,11 +28,12 @@
 |------|------|
 | **Overview** | KPI·메트릭·추이·SLA미달 + 카드 클릭 **drill-in/out** |
 | **Conversations** | 대화이력 목록(싱글/멀티턴) + 세션 타임라인 + 근거 하이라이트 |
+| **대화 검증** | 콜봇 대화 직접입력/파일 업로드 → **고객사 KB 근거로 품질 검증** (faithfulness·KB recall 등) |
 | **Run Evaluation** | 6스텝 마법사 — Judge모델(Claude/GPT/Gemini, 앙상블)·레벨·메트릭·방법론 |
 | **Review** | 3-pane 휴먼 재평가 워크스페이스 (자동→휴먼 점수 수정/승인) |
 | **Evaluations** | 필터 탐색 + Evidence 드로어 |
 | **Trends** | 일자별/배치별 추이 그래프 + 휴먼·자동 일치도 |
-| **Knowledge Base** | KB 현황 + 검색 커버리지 갭 |
+| **Knowledge Base** | **고객사 지식 구축**(파일 업로드 pdf/docx/xlsx/txt/csv/json/html 등 + 직접 입력·청킹·삭제) + KB 현황 + 검색 커버리지 갭 |
 | **Settings** | SLA 임계값·평가 프로필·Judge 자격증명·알림 |
 
 ---
@@ -50,8 +51,9 @@ pip install -r requirements-dev.txt          # 경량 의존성만
 # 백엔드 (mock)
 AUTOAUDIT_MOCK=1 uvicorn AutoAudit.app.api.server:app --port 8000 --reload
 
-# 데모 데이터 시드 (최초 1회)
-python scripts/seed_sessions.py --reset
+# 데모 데이터 시드 (최초 1회) — 포탈 전 화면 검증용 종합 데이터(8주 배치·전 메트릭·검수 4종)
+python scripts/seed_mock_data.py --reset
+# (간단 시드: python scripts/seed_sessions.py --reset)
 
 # 프론트엔드
 cd frontend && npm install && npm run dev    # http://localhost:5173
@@ -111,6 +113,13 @@ docker compose up --build   # backend :8000, frontend :8080
 
 | 옵션 | 기법 | 효과 | 기본값 |
 |------|------|------|--------|
+| `cot` | **Chain-of-Thought 강제** | '근거 먼저, 점수 나중' 단계 추론 → 점수 선결정 편향 차단 (추가 비용 없음) | **on** |
+| `reverse` | **역방향 검증** | 순방향+역방향 양방향 평가 → 불일치 시 저신뢰 플래그 → 환각 누락 탐지↑ | off |
+| `correctness` | **정답성 + 참조 채점** ①② | 정답 대비 claim F1+유사도 → "충실하지만 틀린 답변" 포착, answer_relevance에 정답 주입 | off |
+| `context_injection` | **대화 맥락 주입** ③ | 직전 N턴 이력 주입 → 후속 턴(지시대명사·생략) 오채점 제거 (비용 0) | off |
+| `abstention` | **적정 거절 면제** ④ | 정당한 "정보 없음/거절"의 감점 면제 → 거짓 실패 제거 | off |
+| `numeric_guard` | **결정적 수치 가드** ⑤ | 숫자·금액·날짜를 컨텍스트와 대조 → 수치 환각 포착 (LLM 0) | off |
+| `auto_calibration` | **휴먼 정합 자동 보정** ⑦ | 골든셋으로 점수를 사람 척도로 교정(isotonic/platt/linear) + SLA 자동 튜닝 | off |
 | `calibration` | 편향 보정 + G-Eval | 앵커/길이정규화로 leniency·verbosity bias 완화 | off |
 | `ensemble` | 다중 Judge 앙상블 | OpenAI+Anthropic 교차 평가 → 불일치 시 메타 판정 에스컬레이션 | off |
 | `meta_eval` | 골든셋 메타평가 | 인간 라벨 대비 Spearman ρ / Cohen κ / MAE | off |
@@ -122,14 +131,61 @@ docker compose up --build   # backend :8000, frontend :8080
 | `domain` | 도메인 메트릭 | 멀티턴 일관성 + PII/컴플라이언스 안전성 | off |
 
 ```bash
-# 신뢰성 극대화 프로필
-python run_pipeline.py --enable calibration,ensemble,meta_eval
+# 정확도 극대화 프로필 (CoT 기본 ON + 역방향 검증)
+python run_pipeline.py --enable reverse
 
-# 대규모 저비용 프로필
-python run_pipeline.py --enable ppi,routing
+# 신뢰성 극대화 프로필
+python run_pipeline.py --enable reverse,calibration,ensemble,meta_eval
+
+# 대규모 저비용 프로필 (CoT 끄고 비용 절감)
+python run_pipeline.py --enable ppi,routing --disable cot
 
 # 콜봇 안전성 감사 프로필
 python run_pipeline.py --enable domain,nugget
+
+# 정답 데이터 기반 정밀 감사 (정답성 + 참조 채점 + 수치 가드)
+python run_pipeline.py --enable correctness,numeric_guard
+
+# 멀티턴 콜봇 + 거절 면제 (비용 증가 거의 없음)
+python run_pipeline.py --enable context_injection,abstention,numeric_guard
+```
+
+### CoT + 역방향 검증 동작 원리
+
+```
+[CoT 강제] — answer_relevance / context_precision / context_recall
+  기존: "점수를 매겨라" → LLM이 점수 먼저 정하고 근거 역생성 (편향)
+  개선: Step1 의도분석 → Step2 항목나열 → Step3 누락확인 → Step4 점수
+        → cot_steps 필드에 단계별 추론 기록 (Evidence View 연동)
+
+[역방향 검증] — faithfulness / answer_relevance
+  순방향: 답변 → 컨텍스트 지지 여부 (forward_score)
+  역방향: 컨텍스트 → 답변 도출 가능성 (reverse_score)
+  최종점수 = forward × 0.6 + reverse × 0.4
+  |forward - reverse| > 0.25 → is_low_confidence=True → 사람 검수 우선
+```
+
+### 답변 품질 정확도 강화 동작 원리 (①~⑤,⑦)
+
+```
+[① 정답성 + ② 참조 채점] — answer_correctness (ground_truth 필요)
+  정답 vs 답변 → TP/FP/FN 분류 → F1 = 2·TP/(2·TP+FP+FN)
+  최종 = F1 × 0.75 + 의미유사도 × 0.25
+  → faithfulness가 못 잡는 '컨텍스트엔 충실하나 정답과 다른' 답변 포착
+  + answer_relevance 판정 시 [모범답안]을 주입해 사람 채점과 정렬
+
+[③ 대화 맥락 주입] — answer_relevance / faithfulness
+  "그건 얼마예요?" + 직전 맥락("요금제 안내")  → 지시대명사 해석 후 채점
+  → 후속 턴 고립 평가로 인한 체계적 오채점 제거 (LLM 호출 0)
+
+[④ 적정 거절] — 거절 정규식 탐지 → 컨텍스트 근거 부재면 정당
+  정당 → faithfulness/answer_relevance 감점 면제(abstention=True)
+
+[⑤ 수치 가드] — 답변 수치 ∉ 컨텍스트 → 충돌 (결정적, LLM 0)
+  faithfulness -= 0.3 × 충돌수, numeric_flags 기록
+
+[⑦ 자동 보정] — 골든셋(judge→human)으로 보정맵 학습 → 점수 교정
+  judge 0.8 → (사람 척도) 0.6 으로 끌어당김, SLA 임계 F1 최대점 자동 탐색
 ```
 
 ---
@@ -152,7 +208,7 @@ python run_pipeline.py --enable domain,nugget
 ## 테스트
 
 ```bash
-pytest AutoAudit/tests/ -q    # 126개 테스트 (mock 모드, API 키 불필요)
+pytest AutoAudit/tests/ -q    # 210개 테스트 (mock 모드, API 키 불필요)
 ruff check AutoAudit/         # 린트
 ```
 
@@ -184,11 +240,11 @@ cp5:
 AutoAudit/app/
   core/          # 설정·로거·Provider·비용·체크포인트·Tracer
   cp1~cp6/       # 파이프라인 단계
-  api/           # FastAPI 서버 + SQLite 데이터 접근
-  tests/         # 126개 pytest 테스트
-frontend/        # Vite + React 대시보드
+  api/           # FastAPI 서버 + SQLite 데이터 접근 (28개 엔드포인트)
+  tests/         # 210개 pytest 테스트
+frontend/        # Vite + React 대시보드 (8개 화면)
 config/          # settings.yaml
-scripts/         # dev_local.sh, seed_sessions.py, export_openapi.py
+scripts/         # dev_local.sh, seed_mock_data.py, seed_sessions.py, export_openapi.py
 docs/            # 산출물 문서
 ```
 

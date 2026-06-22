@@ -26,6 +26,9 @@ class CalibrationOptions(BaseModel):
     length_normalize: bool = True       # verbosity bias 완화 프롬프트
     use_anchors: bool = True            # 척도 고정용 앵커 예시 삽입
     g_eval_logprobs: bool = False       # logprob 가중 기대점수 (지원 provider 한정)
+    use_dynamic_anchors: bool = True    # #3 사람 검수 불일치 사례를 few-shot 앵커로 주입
+    anchor_pool_path: str = "data/anchor_pool.jsonl"
+    dynamic_anchor_count: int = 4       # 메트릭당 주입할 동적 앵커 최대 수
 
 
 class EnsembleOptions(BaseModel):
@@ -38,10 +41,13 @@ class EnsembleOptions(BaseModel):
 
 
 class MetaEvalOptions(BaseModel):
-    """인간 골든셋 대비 Judge 메타평가"""
-    enabled: bool = False
+    """인간 골든셋 대비 Judge 메타평가 (#7 상시 KPI)"""
+    enabled: bool = True              # 상시 ON — 감사기 자신의 정확도를 측정
     golden_set_path: str = "data/golden_set.jsonl"
     metrics: list[str] = Field(default_factory=lambda: ["spearman", "kappa", "mae"])
+    schedule: str = "per_batch"       # per_batch | daily
+    track_by: list[str] = Field(default_factory=lambda: ["metric"])
+    drift_alert_rho: float = 0.7       # 직전 run 대비 ρ 하락 회귀 경보 임계
 
 
 class NuggetOptions(BaseModel):
@@ -91,6 +97,139 @@ class DomainMetricsOptions(BaseModel):
     )
 
 
+class CoTOptions(BaseModel):
+    """Chain-of-Thought 단계별 추론 강제
+
+    LLM이 점수를 먼저 결정하고 근거를 역으로 생성하는 편향을 방지.
+    '근거 먼저, 점수 나중' 구조로 프롬프트를 재구성한다.
+
+    적용 메트릭: answer_relevance / context_precision / context_recall
+    (faithfulness는 이미 claim NLI로 CoT 구조)
+    """
+    enabled: bool = True              # 기본 ON — 품질 향상 대비 비용 증가 없음
+    metrics: list[str] = Field(
+        default_factory=lambda: ["answer_relevance", "context_precision", "context_recall"]
+    )
+
+
+class ReverseVerificationOptions(BaseModel):
+    """역방향 검증 (Reverse Verification)
+
+    순방향(forward)과 역방향(backward) 두 방향으로 독립 평가 후 비교.
+    두 방향이 크게 다르면(불일치) is_low_confidence=True 처리.
+    최종 점수 = forward × weight_forward + reverse × weight_reverse
+
+    faithfulness:  순방향 = 답변→컨텍스트 지지 여부
+                   역방향 = 컨텍스트→답변 생성 가능 여부
+
+    answer_relevance: 순방향 = 답변이 질문에 응답하는가
+                      역방향 = 답변만 보고 원래 질문을 추론할 수 있는가
+    """
+    enabled: bool = False             # 기본 OFF — LLM 호출 2× 비용
+    metrics: list[str] = Field(
+        default_factory=lambda: ["faithfulness", "answer_relevance"]
+    )
+    weight_forward: float = 0.6       # 순방향 가중치
+    weight_reverse: float = 0.4       # 역방향 가중치
+    inconsistency_threshold: float = 0.25   # |forward - reverse| > 이 값 → is_low_confidence
+
+
+class CorrectnessOptions(BaseModel):
+    """정답성(Answer Correctness) + 참조 기반 채점 ① ②
+
+    ground_truth(정답)가 있을 때만 동작.
+      ① answer_correctness 메트릭 신설:
+         정답 대비 claim F1(TP/FP/FN) × weight_f1
+         + 의미 유사도(임베딩) × weight_similarity
+      ② reference_guided: answer_relevance 판정 시 정답을 함께 제공해
+         판정자가 '모범답안 대비' 채점하도록 → judge-사람 일치도 향상
+    '충실하지만 틀린 답변'을 잡는 유일한 축.
+    """
+    enabled: bool = False             # ground_truth 있을 때만 의미 → 기본 OFF
+    metric_name: str = "answer_correctness"
+    weight_f1: float = 0.75           # claim F1 가중
+    weight_similarity: float = 0.25   # 의미 유사도 가중
+    reference_guided: bool = True     # answer_relevance에 정답 주입 (②)
+
+
+class ContextInjectionOptions(BaseModel):
+    """대화 맥락 주입(Multi-turn Context) ③
+
+    턴 평가 시 직전 N턴 대화 이력을 프롬프트에 주입.
+    "그건 얼마예요?" 같은 지시대명사·생략 후속 턴의 오채점을 제거.
+    추가 LLM 호출 없음 (프롬프트 길이만 증가).
+    """
+    enabled: bool = False
+    max_history_turns: int = 6        # 주입할 직전 턴 최대 개수
+    metrics: list[str] = Field(
+        default_factory=lambda: ["answer_relevance", "faithfulness"]
+    )
+
+
+class AbstentionOptions(BaseModel):
+    """적정 거절/모름 판정(Appropriate Abstention) ④
+
+    "정보가 없습니다/안내가 어렵습니다" 같은 거절이 정당한지 판정.
+    컨텍스트에 실제로 정보가 없어 거절이 옳다면 relevance/faithfulness
+    감점을 면제(exempt_score 부여) → 정당한 거절의 '거짓 실패'를 제거.
+    """
+    enabled: bool = False
+    exempt_metrics: list[str] = Field(
+        default_factory=lambda: ["answer_relevance", "faithfulness"]
+    )
+    exempt_score: float = 1.0         # 정당 거절 시 부여 점수
+
+
+class NumericGuardOptions(BaseModel):
+    """결정적 수치·엔티티 가드(Numeric/Entity Guard) ⑤
+
+    답변 속 숫자·금액·날짜·기간을 컨텍스트와 결정적으로 대조.
+    컨텍스트에 없는 수치를 답변이 주장하면 수치 환각으로 보고
+    faithfulness 점수를 충돌 수만큼 감점 → LLM이 놓치는 수치 환각 포착.
+    LLM 호출 없음 (정규식 기반, 비용 0).
+    """
+    enabled: bool = False
+    apply_to: str = "faithfulness"    # 가드를 적용할 메트릭
+    penalty_per_conflict: float = 0.3  # 수치 충돌 1건당 감점
+    check_dates: bool = True          # 날짜/기간 표현도 검사
+    check_negation: bool = True       # #6 부정극성 반전 충돌(가능↔불가능)
+    check_entities: bool = True       # #6 엔티티/식별자(조항·코드·고유명사) 충돌
+    negation_penalty: float = 0.4     # 부정극성 충돌 1건당 감점
+    entity_penalty: float = 0.3       # 엔티티 충돌 1건당 감점
+
+
+class FeedbackLoopOptions(BaseModel):
+    """#3 Human Review → 골든셋 환류 루프
+
+    Review 확정(승인/수정) 시 사람 점수를 골든셋에 누적하고,
+    큰 불일치 사례를 few-shot 앵커 풀에 적재한다.
+    누적분이 recalibrate_every의 배수가 되면 재보정 권고를 로깅한다.
+    """
+    enabled: bool = True
+    golden_set_path: str = "data/golden_set.jsonl"
+    anchor_pool_path: str = "data/anchor_pool.jsonl"
+    recalibrate_every: int = 25       # 신규 골든 N건마다 재보정 권고
+    anchor_pool_size: int = 12        # 앵커 풀 최대 크기 (메트릭별 조회 상한)
+    disagreement_threshold: float = 0.3  # |auto-human| 이상이면 앵커로 승격
+
+
+class AutoCalibrationOptions(BaseModel):
+    """휴먼 정합 자동 보정 루프(Auto-Calibration) ⑦
+
+    meta_eval이 '측정'(spearman/kappa/mae)만 했다면, 이 옵션은 '교정'까지:
+      - 골든셋(judge→human)으로 보정맵 학습(isotonic/platt/linear)
+      - 각 점수에 보정맵 적용 (원점수는 calibrated_from에 보존)
+      - SLA 임계를 사람 합격/불합격 F1 최대화 지점으로 자동 튜닝
+    정확도를 '측정 가능 + 자동 개선'으로 폐루프화.
+    """
+    enabled: bool = False
+    golden_set_path: str = "data/golden_set.jsonl"
+    method: str = "isotonic"          # isotonic | platt | linear | identity
+    auto_tune_sla: bool = True        # SLA 임계 자동 탐색
+    min_samples: int = 10             # 메트릭별 최소 골든 샘플 (미만이면 보정 생략)
+    feedback_loop: FeedbackLoopOptions = Field(default_factory=FeedbackLoopOptions)  # #3
+
+
 class EvaluationOptions(BaseModel):
     """전체 평가 기법 토글 묶음"""
     calibration: CalibrationOptions = Field(default_factory=CalibrationOptions)
@@ -102,6 +241,13 @@ class EvaluationOptions(BaseModel):
     routing: RoutingOptions = Field(default_factory=RoutingOptions)
     ppi: PPIOptions = Field(default_factory=PPIOptions)
     domain: DomainMetricsOptions = Field(default_factory=DomainMetricsOptions)
+    cot: CoTOptions = Field(default_factory=CoTOptions)
+    reverse: ReverseVerificationOptions = Field(default_factory=ReverseVerificationOptions)
+    correctness: CorrectnessOptions = Field(default_factory=CorrectnessOptions)
+    context_injection: ContextInjectionOptions = Field(default_factory=ContextInjectionOptions)
+    abstention: AbstentionOptions = Field(default_factory=AbstentionOptions)
+    numeric_guard: NumericGuardOptions = Field(default_factory=NumericGuardOptions)
+    auto_calibration: AutoCalibrationOptions = Field(default_factory=AutoCalibrationOptions)
 
     # ----------------------------------------------------------
     # 로더
@@ -150,4 +296,11 @@ class EvaluationOptions(BaseModel):
             "routing": self.routing.enabled,
             "ppi": self.ppi.enabled,
             "domain": self.domain.enabled,
+            "cot": self.cot.enabled,
+            "reverse": self.reverse.enabled,
+            "correctness": self.correctness.enabled,
+            "context_injection": self.context_injection.enabled,
+            "abstention": self.abstention.enabled,
+            "numeric_guard": self.numeric_guard.enabled,
+            "auto_calibration": self.auto_calibration.enabled,
         }

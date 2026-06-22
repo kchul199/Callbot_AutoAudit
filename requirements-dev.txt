@@ -12,6 +12,12 @@ tenacity>=8.2.0
 # API 서버 (대시보드 백엔드)
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9        # KB 파일 업로드(UploadFile)
+
+# KB 파일 업로드 파서 (고객사 지식 구축 — 경량, mock 모드에서도 지원)
+pypdf>=4.0.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
 
 # Testing
 pytest>=8.0.0

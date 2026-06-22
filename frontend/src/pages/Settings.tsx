@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, useFetch } from "../api/client";
+import CredentialModal from "../components/CredentialModal";
 import type { TenantSettings } from "../types";
 
 const PROFILES = ["기본", "빠른 점검", "고신뢰", "검색 진단", "안전성 감사"];
@@ -22,6 +23,7 @@ export default function Settings() {
   const [draft, setDraft] = useState<TenantSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [credProvider, setCredProvider] = useState<string | null>(null);
 
   useEffect(() => { if (data) setDraft(structuredClone(data)); }, [data]);
 
@@ -101,14 +103,23 @@ export default function Settings() {
       {/* Judge 자격증명 */}
       <div className="card card-pad" style={{ marginBottom: 18 }}>
         <h3>Judge 자격증명</h3>
-        <div className="card-sub">provider별 API 키 등록 상태 (환경변수 기반)</div>
+        <div className="card-sub">provider를 클릭해 API 키를 등록·관리합니다 (환경변수 또는 수동 등록)</div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {Object.entries(draft.judge_credentials ?? {}).map(([p, ok]) => (
-            <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 13px", border: "1px solid var(--border)", borderRadius: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{p}</span>
-              <span className={`badge ${ok ? "ok" : "warn"}`}>{ok ? "등록됨" : "키 미등록"}</span>
-            </div>
-          ))}
+          {Object.entries(draft.judge_credentials ?? {}).map(([p, ok]) => {
+            const detail = draft.credential_details?.[p];
+            return (
+              <div key={p} className="cred-chip" role="button" tabIndex={0}
+                onClick={() => setCredProvider(p)}
+                onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setCredProvider(p)}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{p}</span>
+                <span className={`badge ${ok ? "ok" : "warn"}`}>{ok ? "등록됨" : "키 미등록"}</span>
+                {detail?.source === "manual" && detail.masked_key && (
+                  <span className="mono faint">{detail.masked_key}</span>
+                )}
+                <span className="cred-chip-cog" aria-hidden>⚙️</span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -137,6 +148,17 @@ export default function Settings() {
           </div>
         </div>
       </div>
+
+      {/* Judge 자격증명 등록 모달 */}
+      {credProvider && (
+        <CredentialModal
+          tenant={tenant!}
+          provider={credProvider}
+          detail={draft.credential_details?.[credProvider]}
+          onSaved={(updated) => setDraft(updated)}
+          onClose={() => setCredProvider(null)}
+        />
+      )}
     </div>
   );
 }

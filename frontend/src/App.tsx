@@ -4,6 +4,7 @@ import { AppShell } from "./components/layout/AppShell";
 import Overview from "./pages/Overview";
 import Conversations from "./pages/Conversations";
 import ConversationDetail from "./pages/ConversationDetail";
+import AuditConversation from "./pages/AuditConversation";
 import RunEvaluation from "./pages/RunEvaluation";
 import Review from "./pages/Review";
 import Evaluations from "./pages/Evaluations";
@@ -38,6 +39,7 @@ export default function App() {
         <Route index element={<Overview />} />
         <Route path="conversations" element={<Conversations />} />
         <Route path="conversations/:id" element={<ConversationDetail />} />
+        <Route path="audit" element={<AuditConversation />} />
         <Route path="runs" element={<RunEvaluation />} />
         <Route path="review" element={<Review />} />
         <Route path="evaluations" element={<Evaluations />} />

@@ -26,6 +26,8 @@ class DataAccess:
         self.repo = repo if repo is not None else ResultsRepository()
         # tenant 설정 (M6) — 인메모리 (운영 시 DB/파일로 영속)
         self._settings: dict[str, dict[str, Any]] = {}
+        # provider 자격증명 (tenant → provider → 메타). 평문 키는 저장하지 않고 마스킹만 보관.
+        self._credentials: dict[str, dict[str, dict[str, Any]]] = {}
 
     def list_runs(self) -> list[dict[str, Any]]:
         db_runs = self.store.list_runs()
@@ -72,7 +74,62 @@ class DataAccess:
         return self.store.review_queue(tenant_id=tenant_id, limit=limit)
 
     def record_review(self, eval_id: str, **kwargs: Any) -> bool:
-        return self.store.record_human_review(eval_id, **kwargs)
+        ok = self.store.record_human_review(eval_id, **kwargs)
+        if ok:
+            # #3 Review 환류: 확정된 사람 점수를 골든셋/앵커 풀에 누적 (실패해도 검수는 성공 처리)
+            try:
+                self._feed_review_to_golden(
+                    eval_id,
+                    status=kwargs.get("status", ""),
+                    human_scores=kwargs.get("human_scores") or {},
+                )
+            except Exception as exc:  # noqa: BLE001
+                from AutoAudit.app.core.logger import get_logger
+                get_logger(__name__).warning(f"[review] 골든셋 환류 실패(무시): {exc}")
+        return ok
+
+    def _feed_review_to_golden(
+        self, eval_id: str, status: str, human_scores: dict[str, float]
+    ) -> None:
+        """#3 승인/수정 확정 시 (qa_id, metric, human_score)를 골든셋에 append."""
+        if status not in ("approved", "overridden"):
+            return
+        from AutoAudit.app.cp4_evaluator.golden_store import GoldenStore
+        from AutoAudit.app.cp4_evaluator.options import FeedbackLoopOptions
+
+        opts = FeedbackLoopOptions()
+        if not opts.enabled:
+            return
+        rec = self.store.get_evaluation_by_id(eval_id)
+        if not rec or not rec.get("qa_id"):
+            return
+        auto_scores = {s["metric"]: s["score"] for s in (rec.get("scores") or []) if s.get("metric")}
+        # 승인(approved)인데 명시 점수가 없으면 = 자동 점수에 동의 → 자동 점수를 사람 점수로 채택
+        if status == "approved" and not human_scores:
+            human_scores = dict(auto_scores)
+        if not human_scores:
+            return
+
+        store = GoldenStore(
+            golden_path=opts.golden_set_path,
+            anchor_path=opts.anchor_pool_path,
+            disagreement_threshold=opts.disagreement_threshold,
+            anchor_pool_size=opts.anchor_pool_size,
+        )
+        store.append_review(
+            qa_id=rec["qa_id"],
+            query=rec.get("query", ""),
+            answer=rec.get("generated_answer", ""),
+            auto_scores=auto_scores,
+            human_scores=human_scores,
+        )
+        # 재보정 권고: 누적 골든이 임계 배수에 도달하면 로깅 (다음 파이프라인 run이 반영)
+        total = store.golden_count()
+        if opts.recalibrate_every > 0 and total % opts.recalibrate_every == 0:
+            from AutoAudit.app.core.logger import get_logger
+            get_logger(__name__).info(
+                f"[review] 골든 {total}건 누적 — auto_calibration 재보정 권고 (다음 run 반영)"
+            )
 
     def get_evaluation_any(self, eval_id: str) -> dict[str, Any] | None:
         """run 무관 단일 평가 조회 (검수 워크스페이스용)."""
@@ -95,14 +152,44 @@ class DataAccess:
     def kb_status(self, tenant_id: str) -> dict[str, Any]:
         return self.store.kb_status(tenant_id)
 
-    def get_settings(self, tenant_id: str) -> dict[str, Any]:
-        import os
+    def kb_add_document(
+        self, tenant_id: str, title: str, content: str, source_type: str = "수동",
+    ) -> dict[str, Any]:
+        """고객사 지식 문서 추가 후 갱신된 KB 현황 반환."""
+        self.store.add_kb_document(tenant_id, title, content, source_type)
+        return self.store.kb_status(tenant_id)
 
+    def kb_delete_document(self, tenant_id: str, doc_id: str) -> dict[str, Any]:
+        """구축 KB 문서 삭제 후 갱신된 KB 현황 반환."""
+        self.store.delete_kb_document(doc_id)
+        return self.store.kb_status(tenant_id)
+
+    def kb_upload_document(
+        self, tenant_id: str, filename: str, data: bytes,
+        title: str = "", source_type: str = "",
+    ) -> dict[str, Any]:
+        """업로드 파일에서 텍스트를 추출해 KB 문서로 추가 (다양한 포맷 지원)."""
+        from pathlib import Path
+
+        from AutoAudit.app.cp2_knowledge_base.file_loader import extract_text
+        text, detected_type = extract_text(filename, data)
+        doc_title = (title or "").strip() or Path(filename).stem or filename
+        self.store.add_kb_document(
+            tenant_id, doc_title, text, (source_type or "").strip() or detected_type,
+        )
+        return self.store.kb_status(tenant_id)
+
+    # provider → 자격증명 환경변수 매핑
+    _CRED_ENV = {
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "azure": ("AZURE_OPENAI_API_KEY",),
+    }
+
+    def _default_settings(self, tenant_id: str) -> dict[str, Any]:
         from AutoAudit.app.core.config import get as cfg_get
-        if tenant_id in self._settings:
-            return self._settings[tenant_id]
-        mock = os.environ.get("AUTOAUDIT_MOCK") == "1"
-        defaults = {
+        return {
             "tenant_id": tenant_id,
             "sla_thresholds": cfg_get("cp5.sla_thresholds", default={
                 "faithfulness": 0.8, "answer_relevance": 0.75,
@@ -110,22 +197,172 @@ class DataAccess:
             }),
             "eval_profile": "기본",
             "default_judge": "anthropic",
-            "judge_credentials": {
-                "anthropic": mock or bool(os.environ.get("ANTHROPIC_API_KEY")),
-                "openai": mock or bool(os.environ.get("OPENAI_API_KEY")),
-                "gemini": mock or bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-                "azure": mock or bool(os.environ.get("AZURE_OPENAI_API_KEY")),
-            },
             "slack_webhook": "",
             "notify_on_regression": True,
             "reviewers": ["qa_kim", "qa_lee"],
         }
-        return defaults
+
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        """평문 키를 마스킹 — 마지막 4자리만 노출."""
+        key = (key or "").strip()
+        if not key:
+            return ""
+        tail = key[-4:] if len(key) > 4 else key
+        return "••••••••" + tail
+
+    def _compute_credentials(self, tenant_id: str) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
+        """env + 수동 등록을 병합해 provider별 (등록여부, 상세) 산출."""
+        import os
+        manual = self._credentials.get(tenant_id, {})
+        bool_out: dict[str, bool] = {}
+        detail_out: dict[str, dict[str, Any]] = {}
+        for prov, env_keys in self._CRED_ENV.items():
+            m = manual.get(prov)
+            env_present = any(os.environ.get(k) for k in env_keys)
+            if m:  # 수동 등록 우선
+                detail = {
+                    "provider": prov, "registered": True, "source": "manual",
+                    "masked_key": m.get("masked_key", ""), "base_url": m.get("base_url", ""),
+                    "endpoint": m.get("endpoint", ""), "api_version": m.get("api_version", ""),
+                    "deployment": m.get("deployment", ""), "updated_at": m.get("updated_at"),
+                }
+            elif env_present:
+                detail = {
+                    "provider": prov, "registered": True, "source": "env",
+                    "masked_key": "환경변수", "base_url": "", "endpoint": "",
+                    "api_version": "", "deployment": "", "updated_at": None,
+                }
+            else:
+                detail = {
+                    "provider": prov, "registered": False, "source": "none",
+                    "masked_key": "", "base_url": "", "endpoint": "",
+                    "api_version": "", "deployment": "", "updated_at": None,
+                }
+            bool_out[prov] = detail["registered"]
+            detail_out[prov] = detail
+        return bool_out, detail_out
+
+    async def audit_conversation(
+        self,
+        tenant_id: str,
+        call_log: Any,
+        ground_truths: list[str] | None = None,
+        conversation_id: str | None = None,
+        enable: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        대화를 고객사 구축 KB를 근거로 검증 (KB 검색 → QA 추출 → CP4 평가 → 저장).
+
+        반환: {run_id, conversation_id, total_evaluations, metrics[], message}
+        예외: ValueError (KB 없음 / QA 추출 실패)
+        """
+        import uuid
+
+        from AutoAudit.app.core.llm_client import create_provider
+        from AutoAudit.app.core.types import utcnow
+        from AutoAudit.app.cp2_knowledge_base.kb_retriever import build_kb_retriever
+        from AutoAudit.app.cp4_evaluator.judge import LLMJudge
+        from AutoAudit.app.cp4_evaluator.options import EvaluationOptions
+        from AutoAudit.app.cp4_evaluator.qa_builder import QAPairBuilder
+        from AutoAudit.app.cp5_aggregator.aggregator import ResultAggregator
+
+        provider = create_provider()
+
+        # ① 구축 KB → 검색기
+        retriever = await build_kb_retriever(tenant_id, self.store, provider)
+        if retriever is None:
+            raise ValueError("구축된 KB 문서가 없습니다. Knowledge Base에서 먼저 지식을 추가하세요.")
+
+        # ② 대화 → QA 쌍 (+history, ground_truth)
+        conv_id = conversation_id or call_log.call_id
+        builder = QAPairBuilder(retriever=retriever)
+        pairs = builder.extract_pairs(call_log)
+        if not pairs:
+            raise ValueError("대화에서 (질문, 봇답변) 쌍을 추출하지 못했습니다. 입력 형식을 확인하세요.")
+        gts = ground_truths or []
+        for i, p in enumerate(pairs):
+            p.tenant_id = tenant_id
+            p.conversation_id = conv_id
+            if i < len(gts) and gts[i]:
+                p.ground_truth = gts[i]
+        await builder.attach_retrieval(pairs)
+
+        # ③ 평가 (정답 있으면 correctness 자동 활성 + 맥락 주입 ON)
+        opts = EvaluationOptions.from_config().apply_cli_overrides(enable or [], None)
+        opts.context_injection.enabled = True
+        if any(p.ground_truth for p in pairs):
+            opts.correctness.enabled = True
+        records = await LLMJudge(provider=provider, options=opts).evaluate_pairs(pairs)
+
+        run_id = f"audit_{uuid.uuid4().hex[:8]}"
+        for r in records:
+            r.tenant_id = tenant_id
+            r.conversation_id = conv_id
+            r.eval_run_id = run_id
+
+        # ④ 저장: 대화 원문 + 평가 + 요약
+        self.store.upsert_conversation(
+            conversation_id=conv_id, tenant_id=tenant_id,
+            subscriber_id=getattr(call_log, "subscriber_id", "직접입력"),
+            turns=[{"role": t.role.value, "content": t.content} for t in call_log.turns],
+            started_at=utcnow().isoformat(),
+            metadata={"source": "audit", "tenant_id": tenant_id},
+        )
+        self.store.upsert_evaluations(run_id, records)
+        summary = ResultAggregator().aggregate(records, run_id=run_id, options=opts)
+        self.store.upsert_summary(summary)
+
+        return {
+            "run_id": run_id, "conversation_id": conv_id, "tenant_id": tenant_id,
+            "total_evaluations": len(records),
+            "metrics": [
+                {"metric": m.metric, "mean": round(m.mean, 4),
+                 "below_sla_count": m.below_sla_count, "total_count": m.total_count,
+                 "sla_pass_rate": round(m.sla_pass_rate, 4)}
+                for m in summary.metrics
+            ],
+            "message": f"{len(pairs)}개 QA 쌍을 고객사 KB 근거로 검증 완료",
+        }
+
+    def get_settings(self, tenant_id: str) -> dict[str, Any]:
+        base = self._settings.get(tenant_id) or self._default_settings(tenant_id)
+        creds, details = self._compute_credentials(tenant_id)
+        return {
+            **base, "tenant_id": tenant_id,
+            "judge_credentials": creds, "credential_details": details,
+        }
 
     def save_settings(self, tenant_id: str, settings: dict[str, Any]) -> dict[str, Any]:
-        merged = {**self.get_settings(tenant_id), **settings, "tenant_id": tenant_id}
-        self._settings[tenant_id] = merged
-        return merged
+        # 자격증명은 별도 엔드포인트로만 갱신 — 설정 저장 시 마스킹 값이 덮어쓰지 않도록 제외
+        clean = {k: v for k, v in settings.items()
+                 if k not in ("judge_credentials", "credential_details", "tenant_id")}
+        base = self._settings.get(tenant_id) or self._default_settings(tenant_id)
+        self._settings[tenant_id] = {**base, **clean, "tenant_id": tenant_id}
+        return self.get_settings(tenant_id)
+
+    def save_credential(self, tenant_id: str, provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """provider 자격증명 등록 — 평문 키는 마스킹만 보관(평문 미저장)."""
+        from datetime import UTC, datetime
+        if provider not in self._CRED_ENV:
+            raise ValueError(f"알 수 없는 provider: {provider}")
+        api_key = (payload.get("api_key") or "").strip()
+        if not api_key:
+            raise ValueError("api_key가 필요합니다.")
+        self._credentials.setdefault(tenant_id, {})[provider] = {
+            "masked_key": self._mask_key(api_key),
+            "base_url": (payload.get("base_url") or "").strip(),
+            "endpoint": (payload.get("endpoint") or "").strip(),
+            "api_version": (payload.get("api_version") or "").strip(),
+            "deployment": (payload.get("deployment") or "").strip(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        return self.get_settings(tenant_id)
+
+    def delete_credential(self, tenant_id: str, provider: str) -> dict[str, Any]:
+        """수동 등록 자격증명 삭제 (env 기반은 영향 없음)."""
+        self._credentials.get(tenant_id, {}).pop(provider, None)
+        return self.get_settings(tenant_id)
 
     def get_summary(self, run_id: str) -> dict[str, Any] | None:
         return self.store.get_summary(run_id) or self.repo.get_summary(run_id)
@@ -159,3 +396,51 @@ class DataAccess:
                 series.add(m["metric"])
             points.append(point)
         return {"points": points, "metrics": sorted(series)}
+
+    def meta_eval_trends(self) -> dict[str, Any]:
+        """#7 run별 감사기↔인간 일치도(ρ/κ/MAE) 추세.
+
+        저장된 평가(qa_id+scores)를 골든셋과 매칭해 run마다 메타평가를 재계산한다.
+        (별도 영속 스키마 없이 기존 평가 데이터로 on-the-fly 산출 → DB 마이그레이션 불필요)
+        """
+        from AutoAudit.app.cp4_evaluator.meta_eval import MetaEvaluator
+        from AutoAudit.app.cp4_evaluator.options import MetaEvalOptions
+
+        evaluator = MetaEvaluator(MetaEvalOptions())
+        golden = evaluator.load_golden()
+        points: list[dict[str, Any]] = []
+        metrics_seen: set[str] = set()
+
+        if golden:
+            for r in reversed(self.list_runs()):
+                run_id = r["run_id"]
+                evals = self.get_evaluations(run_id)
+                rows = [
+                    (e.get("qa_id") or "", s.get("metric"), s.get("score"))
+                    for e in evals
+                    for s in (e.get("scores") or [])
+                    if s.get("metric") and s.get("score") is not None
+                ]
+                result = evaluator.evaluate_from_rows(rows)
+                if not result.get("available"):
+                    continue
+                overall = result.get("overall", {})
+                point: dict[str, Any] = {
+                    "run_id": run_id,
+                    "generated_at": r.get("generated_at"),
+                    "n": result.get("n"),
+                    "spearman": overall.get("spearman"),
+                    "kappa": overall.get("kappa"),
+                    "mae": overall.get("mae"),
+                }
+                for m, st in (result.get("per_metric") or {}).items():
+                    metrics_seen.add(m)
+                    point[f"{m}__spearman"] = st.get("spearman")
+                    point[f"{m}__mae"] = st.get("mae")
+                points.append(point)
+
+        return {
+            "available": bool(points),
+            "points": points,
+            "metrics": sorted(metrics_seen),
+        }

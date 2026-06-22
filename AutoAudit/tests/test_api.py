@@ -128,3 +128,231 @@ def test_api_endpoints(results_tree, tmp_path):
     assert detail["qa_id"] == "q1"
 
     assert client.get("/api/runs/run_abc/evaluations/missing").status_code == 404
+
+
+def test_credential_endpoints(tmp_path, monkeypatch):
+    """Judge 자격증명 등록/조회/삭제 + 마스킹(평문 미유출) 검증."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    # provider 환경변수 격리 → 결정적 (env 키가 있으면 source=env 가 됨)
+    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+              "GOOGLE_API_KEY", "AZURE_OPENAI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    isolated = ResultStore(db_path=str(tmp_path / "empty.db"))
+    server.data = DataAccess(store=isolated, repo=ResultsRepository(str(tmp_path)))
+    client = TestClient(server.app)
+
+    # 초기: 전부 미등록 + credential_details 존재
+    s = client.get("/api/t/acme/settings").json()
+    assert s["judge_credentials"]["anthropic"] is False
+    assert s["credential_details"]["anthropic"]["registered"] is False
+
+    # 등록 → 수동 source + 마스킹 키, 평문 미유출
+    r = client.put("/api/t/acme/credentials/anthropic", json={"api_key": "sk-ant-SECRET-1234"})
+    assert r.status_code == 200
+    d = r.json()["credential_details"]["anthropic"]
+    assert d["registered"] is True and d["source"] == "manual"
+    assert d["masked_key"].endswith("1234")
+    assert "SECRET" not in r.text and "sk-ant-SECRET-1234" not in r.text
+
+    # azure: 추가 필드(endpoint/version/deployment) 영속
+    r = client.put("/api/t/acme/credentials/azure", json={
+        "api_key": "azkey-9999", "endpoint": "https://x.openai.azure.com",
+        "api_version": "2024-06-01", "deployment": "gpt-4o",
+    })
+    az = r.json()["credential_details"]["azure"]
+    assert az["endpoint"] == "https://x.openai.azure.com"
+    assert az["deployment"] == "gpt-4o" and az["api_version"] == "2024-06-01"
+
+    # 빈 키 거부
+    assert client.put("/api/t/acme/credentials/anthropic", json={"api_key": ""}).status_code == 400
+
+    # 삭제 → 미등록 복귀
+    r = client.delete("/api/t/acme/credentials/anthropic")
+    assert r.json()["credential_details"]["anthropic"]["registered"] is False
+
+
+def test_kb_document_build(tmp_path):
+    """고객사 지식 구축 — KB 문서 추가/청킹/목록/삭제."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "kb.db")))
+    client = TestClient(server.app)
+
+    # 초기: 구축 문서 0
+    assert client.get("/api/t/acme/kb").json()["built_document_count"] == 0
+
+    # 추가 → 청킹되어 카운트 반영
+    long_text = "5G 프리미엄 요금제는 월 69000원입니다. " * 30
+    r = client.post("/api/t/acme/kb/documents",
+                    json={"title": "요금제 정책", "content": long_text, "source_type": "정책"})
+    assert r.status_code == 200
+    kb = r.json()
+    assert kb["built_document_count"] == 1
+    doc = kb["built_documents"][0]
+    assert doc["title"] == "요금제 정책" and doc["source_type"] == "정책"
+    assert doc["chunk_count"] >= 1 and doc["char_count"] == len(long_text.strip())
+    assert kb["built_chunk_count"] == doc["chunk_count"]
+
+    # 빈 제목/내용 거부
+    assert client.post("/api/t/acme/kb/documents", json={"title": "", "content": "x"}).status_code == 400
+    assert client.post("/api/t/acme/kb/documents", json={"title": "x", "content": ""}).status_code == 400
+
+    # 테넌트 격리: globex에는 없음
+    assert client.get("/api/t/globex/kb").json()["built_document_count"] == 0
+
+    # 삭제 → 0 복귀
+    r = client.delete(f"/api/t/acme/kb/documents/{doc['doc_id']}")
+    assert r.json()["built_document_count"] == 0
+
+
+def test_kb_file_upload(tmp_path):
+    """고객사 지식 파일 업로드 — 다양한 포맷 추출 + 미지원/빈파일 거부."""
+    import io
+
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "kb.db")))
+    client = TestClient(server.app)
+    url = "/api/t/acme/kb/documents/upload"
+
+    # txt → source_type 자동 감지 "텍스트"
+    r = client.post(url, files={"files": ("요금.txt", "5G는 월 69000원. " * 20, "text/plain")})
+    assert r.status_code == 200
+    kb = r.json()
+    assert kb["built_document_count"] == 1
+    assert kb["built_documents"][0]["source_type"] == "텍스트"
+    assert kb["built_documents"][0]["title"] == "요금"  # 확장자 제거된 stem
+
+    # csv + json 다중 업로드
+    r = client.post(url, files=[
+        ("files", ("faq.csv", "Q,A\n요금?,69000", "text/csv")),
+        ("files", ("plan.json", '{"price": 69000}', "application/json")),
+    ])
+    assert r.status_code == 200 and r.json()["built_document_count"] == 3
+
+    # docx 추출 (python-docx 설치 시)
+    import docx
+    b = io.BytesIO()
+    d = docx.Document()
+    d.add_paragraph("약관 본문입니다.")
+    d.save(b)
+    r = client.post(url, files={"files": ("약관.docx", b.getvalue(), "application/octet-stream")})
+    assert r.status_code == 200
+    assert any(x["source_type"] == "Word" for x in r.json()["built_documents"])
+
+    # 미지원 포맷 → 400
+    assert client.post(url, files={"files": ("a.exe", b"MZ", "application/octet-stream")}).status_code == 400
+    # 빈 파일 → 400
+    assert client.post(url, files={"files": ("empty.txt", "", "text/plain")}).status_code == 400
+
+
+def test_file_loader_formats():
+    """file_loader.extract_text — 텍스트/HTML/CSV/JSON 포맷별 추출."""
+    from AutoAudit.app.cp2_knowledge_base.file_loader import SUPPORTED_EXTENSIONS, extract_text
+
+    assert ".pdf" in SUPPORTED_EXTENSIONS and ".docx" in SUPPORTED_EXTENSIONS
+    txt, st = extract_text("a.txt", "안녕하세요".encode())
+    assert txt == "안녕하세요" and st == "텍스트"
+    # HTML 태그 제거 + script 제외
+    html = b"<html><body><h1>title</h1><p>content</p><script>bad()</script></body></html>"
+    txt, st = extract_text("a.html", html)
+    assert "title" in txt and "content" in txt and "bad" not in txt and st == "HTML"
+    # CSV → 행 구분
+    txt, _ = extract_text("a.csv", b"a,b\n1,2")
+    assert "a | b" in txt and "1 | 2" in txt
+    # 미지원 확장자
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        extract_text("a.exe", b"data")
+
+
+def test_transcript_parser():
+    """직접 입력 transcript/JSON 파싱 + 정답 추출."""
+    from AutoAudit.app.cp1_preprocessing.transcript import parse_transcript
+
+    # 라인 transcript ("고객:"/"콜봇:") + [정답]
+    text = "고객: 요금 얼마?\n콜봇: 월 69000원입니다.\n[정답] 5G는 월 69000원입니다."
+    log, gts = parse_transcript(text)
+    roles = [t.role.value for t in log.turns]
+    assert roles == ["user", "bot"]
+    assert gts == ["5G는 월 69000원입니다."]
+    # JSON 입력 + ground_truths
+    js = '{"turns":[{"role":"user","content":"해지?"},{"role":"bot","content":"위약금 있음"}],"ground_truths":["약정 잔여기간 비례"]}'
+    log2, gts2 = parse_transcript(js)
+    assert len(log2.turns) == 2 and gts2 == ["약정 잔여기간 비례"]
+
+
+@pytest.mark.asyncio
+async def test_audit_conversation_flow(tmp_path):
+    """대화 검증 — KB 근거로 평가. KB 없으면 400, 있으면 평가 생성."""
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "audit.db")))
+    client = TestClient(server.app)
+    convo = "고객: 5G 요금 얼마?\n콜봇: 월 69000원입니다.\n[정답] 5G 프리미엄은 월 69000원입니다."
+
+    # KB 없음 → 400
+    r = client.post("/api/t/acme/audit-conversation", json={"text": convo})
+    assert r.status_code == 400 and "KB" in r.json()["detail"]
+
+    # KB 구축 후 검증 → 평가 생성 + 정답성 포함
+    client.post("/api/t/acme/kb/documents",
+                json={"title": "요금", "content": "5G 프리미엄 요금제는 월 69000원이며 데이터 무제한입니다.", "source_type": "정책"})
+    r = client.post("/api/t/acme/audit-conversation", json={"text": convo})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total_evaluations"] == 1
+    metric_names = {m["metric"] for m in d["metrics"]}
+    assert {"faithfulness", "answer_relevance"} <= metric_names
+    assert "answer_correctness" in metric_names  # [정답] 제공 → 정답성 평가
+
+    # 결과가 run/conversation으로 조회됨
+    assert len(client.get(f"/api/runs/{d['run_id']}/evaluations").json()) == 1
+    conv = client.get(f"/api/conversations/{d['conversation_id']}").json()
+    assert len(conv["turns"]) == 2
+
+    # 빈 입력 → 400
+    assert client.post("/api/t/acme/audit-conversation", json={"text": ""}).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_audit_conversation_upload(tmp_path):
+    """대화 파일 업로드 검증 (json/txt)."""
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    import AutoAudit.app.api.server as server
+    from AutoAudit.app.api.data_access import DataAccess
+    from AutoAudit.app.core.store import ResultStore
+
+    server.data = DataAccess(store=ResultStore(db_path=str(tmp_path / "audit2.db")))
+    client = TestClient(server.app)
+    client.post("/api/t/acme/kb/documents",
+                json={"title": "배송", "content": "3만원 이상 주문 시 무료배송입니다.", "source_type": "정책"})
+
+    payload = _json.dumps({"turns": [
+        {"role": "user", "content": "무료배송 기준?"},
+        {"role": "bot", "content": "3만원 이상이면 무료입니다."},
+    ]})
+    r = client.post("/api/t/acme/audit-conversation/upload",
+                    files={"file": ("conv.json", payload, "application/json")})
+    assert r.status_code == 200 and r.json()["total_evaluations"] == 1

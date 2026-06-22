@@ -48,27 +48,40 @@ class MetaEvaluator:
         return golden
 
     def evaluate(self, records: list[EvaluationRecord]) -> dict:
-        """Judge 점수 vs 인간 점수 상관/일치/오차"""
+        """Judge 점수 vs 인간 점수 상관/일치/오차 (EvaluationRecord 입력)"""
+        rows = [
+            (rec.qa_id or "", ms.metric, ms.score)
+            for rec in records
+            for ms in rec.scores
+        ]
+        result = self.evaluate_from_rows(rows)
+        if result.get("available"):
+            self._log(result)
+        return result
+
+    def evaluate_from_rows(self, rows: list[tuple[str, str, float]]) -> dict:
+        """(qa_id, metric, judge_score) 행 목록으로 메타평가.
+
+        저장된 평가 dict(트렌드 API)·EvaluationRecord 양쪽에서 재사용하는 공통 경로.
+        """
         golden = self.load_golden()
         if not golden:
             return {"available": False, "reason": "골든셋 없음"}
 
         pairs: list[tuple[float, float]] = []  # (judge, human)
         per_metric: dict[str, list[tuple[float, float]]] = {}
-        for rec in records:
-            for ms in rec.scores:
-                key = (rec.qa_id or "", ms.metric)
-                if key in golden:
-                    pair = (ms.score, golden[key])
-                    pairs.append(pair)
-                    per_metric.setdefault(ms.metric, []).append(pair)
+        for qa_id, metric, score in rows:
+            key = (qa_id or "", metric)
+            if key in golden:
+                pair = (float(score), golden[key])
+                pairs.append(pair)
+                per_metric.setdefault(metric, []).append(pair)
 
         if not pairs:
             return {"available": False, "reason": "골든셋과 매칭된 평가 없음"}
 
         result = {"available": True, "n": len(pairs), "overall": self._stats(pairs)}
         result["per_metric"] = {m: self._stats(p) for m, p in per_metric.items()}
-        self._log(result)
         return result
 
     def _stats(self, pairs: list[tuple[float, float]]) -> dict:

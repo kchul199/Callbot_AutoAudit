@@ -164,6 +164,10 @@ async def run_cp4(ctx: PipelineContext, qa_pairs: list, provider, ckpt, options,
     if options.domain.enabled and options.domain.multiturn_consistency and logs:
         await _append_multiturn(all_records, logs, provider, options)
 
+    # ⑦ 휴먼 정합 자동 보정 — 골든셋으로 점수 교정 + SLA 자동튜닝
+    if options.auto_calibration.enabled:
+        _apply_auto_calibration(all_records, options)
+
     Tracer(ctx.run_id, ctx.results_dir).save("cp4_eval_records", all_records)
 
     # SQLite 인덱스 적재 (대량 쿼리용)
@@ -208,6 +212,17 @@ def _ppi_classifier_records(pairs: list, metrics: list) -> list:
             generated_answer=p.bot_answer, retrieval_result=p.retrieval_result, scores=scores,
         ))
     return out
+
+
+def _apply_auto_calibration(records, options) -> None:
+    """⑦ 골든셋 기반 보정맵 학습 → 점수 교정 + SLA 임계 자동튜닝 로깅."""
+    from AutoAudit.app.cp4_evaluator.auto_calibration import AutoCalibrator
+    cal = AutoCalibrator(options.auto_calibration)
+    if cal.fit(records):
+        n = cal.apply_to_records(records)
+        logger.info(f"[CP4] 자동 보정 적용 — {n}점 교정 | 튜닝 SLA={cal.tuned_sla}")
+    else:
+        logger.info(f"[CP4] 자동 보정 생략 — {cal.report().get('reason', '학습 불가')}")
 
 
 async def _append_safety(rec, pair, provider, options) -> None:
@@ -435,7 +450,9 @@ if __name__ == "__main__":
         type=lambda s: s.split(","),
         default=[],
         help="평가 기법 켜기 (쉼표구분): calibration,ensemble,meta_eval,nugget,"
-             "diagnosis,statistics,routing,ppi,domain (하위필드: calibration.g_eval_logprobs)",
+             "diagnosis,statistics,routing,ppi,domain,cot,reverse,"
+             "correctness,context_injection,abstention,numeric_guard,auto_calibration "
+             "(하위필드: calibration.g_eval_logprobs)",
     )
     parser.add_argument(
         "--disable",
